@@ -21,7 +21,9 @@ public class UnreliableChannel {
             //Initialize packet to be recieved and store data in the buffer. Then print it out.
             DatagramPacket messageFromClient = new DatagramPacket(buffer, buffer.length);
             server.receive(messageFromClient);
-            String message = new String(messageFromClient.getData());
+            //Here we initialize a string from the data we get from the client, however we make sure to start reading from 0 only untill the length of the message.
+            //This prevents the slots that arent written to affecting the output
+            String message = new String(messageFromClient.getData(),0,messageFromClient.getLength());
             System.err.println(message);
             //When client sends end message break.
             if (message.equals("END")) {
