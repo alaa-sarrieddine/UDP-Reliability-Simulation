@@ -1,6 +1,6 @@
 The UDP Reliability Simulator is a Java-based application designed to simulate unreliable network conditions in a packet-switched communication scenario using the UDP protocol. This simulation replicates real-world network challenges such as packet loss, delivery delays, and out-of-order packet reception, providing a controlled environment for testing network reliability and behavior under adverse conditions.
 
-Objective
+Objective:
 To emulate an unreliable communication channel between two end-users, simulating:
 
 Random packet loss with a user-defined probability.
