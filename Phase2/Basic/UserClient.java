@@ -22,6 +22,10 @@ public class UserClient {
             //Sleep for half a second before sending next packet.
             Thread.sleep(500);      
         }
-
+        //Send final packet with end message.
+        byte[] endMessage = "END".getBytes();
+        DatagramPacket last = new DatagramPacket(endMessage, endMessage.length,8888);
+        client.send(last);
+        System.out.println("Client: "+identifier + " done sending.");
     }
 }
