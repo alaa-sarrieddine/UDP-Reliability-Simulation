@@ -10,7 +10,7 @@ public class UnreliableChannel {
         if (args.length < 3) {
             System.out.println("Please enter correct parameters.(java UnreliableChannel <p> <minD> <maxD>)");
         }
-        long p = Long.parseLong(args[0]);
+        double p = Double.parseDouble(args[0]);
         int minD = Integer.parseInt(args[1]);
         int maxD = Integer.parseInt(args[2]);
         int testing = 0;
