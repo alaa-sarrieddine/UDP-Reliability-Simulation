@@ -19,10 +19,6 @@ Statistical Reporting
 Provides detailed statistics on packet losses, delays, and average delivery times for each communication direction.
 Configurable Parameters
 Enables customization of loss rate, minimum/maximum delay, and server port via command-line arguments.
-Additional Bonus Features (Optional)
-Variable packet sizes and messages.
-Advanced loss and delay patterns (e.g., bursts, Gaussian distributions).
-Support for concurrent multi-user connections with multithreading.
 Usage
 Configure and run the UnreliableChannel.java server.
 Launch client applications for Users A and B to initiate communication.
