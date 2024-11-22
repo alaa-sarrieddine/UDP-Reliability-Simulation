@@ -6,6 +6,8 @@ import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.Random;
+import java.util.HashSet;
 
 //Each instance of the channel has its own socket,a map for client names and ports,a messagequeue,and the parameters.
 public class UnreliableChannel {
@@ -15,6 +17,12 @@ public class UnreliableChannel {
     private static double prob;
     private static int minD;
     private static int maxD;
+    private static int totalDelayAtoB=0;
+    private static int totalDelayBtoA=0;
+    private static int pktsFromADelayed=0;
+    private static int pktsFromBDelayed=0;
+    private static int pktsFromALost=0;
+    private static int pktsFromBLost=0;
 
     // serverSend()
     // Expects: Nothing
@@ -35,16 +43,49 @@ public class UnreliableChannel {
                 System.out.println("Invalid client packet not sent");
                 return;
             }
-            // Intialize new packet to be sent. Note that since this is running locally we
-            // do not need to get the IP address of the destination,only the port.
-            DatagramPacket send = new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port);
-            try {
-                server.send(send);
-            } catch (Exception e) {
-                System.out.println("failed to send");
-                return;
-            }
+            //random variables that will determine whether we drop the packet or not
+            Random rand = new Random();
+            int rndDrop = rand.nextInt(101);
 
+            //if random variable is less than probability, we will send the packet
+            if(prob*100>=rndDrop){
+                // Intialize new packet to be sent. Note that since this is running locally we
+                // do not need to get the IP address of the destination,only the port.
+                DatagramPacket send = new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port);
+                try {
+                    // Get a random delay between the specified range
+                    int delay = minD+rand.nextInt((maxD - minD) + 1);
+
+                    // Calculating the delay experienced by packets from A or B
+                    // and the amount of packets that got delayed
+                    if(destination=="B"){
+                        totalDelayAtoB+=delay;
+                        if(delay>0){
+                            pktsFromADelayed++;
+                        }
+                    }
+                    else{
+                        totalDelayBtoA+=delay;
+                        if(delay>0){
+                            pktsFromBDelayed++;
+                        }
+                    }
+
+                    // Applying that delay before sending the package
+                    Thread.sleep(delay);
+                    server.send(send);
+                } catch (Exception e) {
+                    System.out.println("failed to send");
+                    return;
+                }
+            }else{
+                // calculating the packets that got dropped
+                if(destination=="B"){
+                    pktsFromALost++;
+                    continue;
+                }
+                pktsFromBLost++;
+            }
         }
 
     }
@@ -60,6 +101,16 @@ public class UnreliableChannel {
         }
     }
 
+    // Expects: nothing
+    // Returns: nothing, but informs clients to stop listening by
+    // sending a special message
+    public static void stopClientListening() throws Exception{
+        HashSet<Integer> ports = new HashSet<Integer>(clients.values());
+        byte[] message = "Communication has stopped!".getBytes();
+        for (Integer port : ports) {
+            server.send(new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port));
+        }
+    }
     public static void main(String[] args) throws Exception {
         // Make sure operator inputs correct amount of parameters.
         if (args.length < 3) {
@@ -96,6 +147,8 @@ public class UnreliableChannel {
             if (message.equals("END")) {
                 nOfMessages--;
                 if (both) {
+                    //send a message to both to stop listening
+                    stopClientListening();
                     break;
                 }
                 both = true;
@@ -108,7 +161,11 @@ public class UnreliableChannel {
                 serverSend();
             }
         }
-        System.out.println("Clients sent end messages! Messages recieved: " + nOfMessages);
+        
+        System.out.println("Packets received from user A: "+ (nOfMessages-pktsFromBLost) +" | Lost: "+pktsFromBLost+" | Delayed: "+pktsFromBDelayed);
+        System.out.println("Packets received from user B: "+ (nOfMessages-pktsFromALost) +"| Lost: "+pktsFromALost+"| Delayed: "+pktsFromADelayed);
+        System.out.println("Average delay from A to B: "+ (float)(totalDelayAtoB)/nOfMessages+" ms.");
+        System.out.println("Average delay from B to A: "+(float)(totalDelayBtoA)/nOfMessages+" ms.");
         server.close();
     }
 }
