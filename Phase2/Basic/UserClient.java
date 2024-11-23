@@ -1,13 +1,10 @@
 package Basic;
 
 import java.net.*;
-import java.util.LinkedList;
-import java.util.Queue;
+
 
 public class UserClient {
     private static DatagramSocket client;
-    private static Queue<DatagramPacket> recievedMessages;
-
     public static void main(String[] args) throws Exception {
         // We make sure the operator input the source name and the destination.
         if (args.length < 2) {
@@ -17,11 +14,10 @@ public class UserClient {
         // Initalize socket for client to send and recieve packets, then set timeout to
         // 0.5 seconds.
         client = new DatagramSocket();
-        client.setSoTimeout(1000);
+        client.setSoTimeout(250);
         InetAddress ip = InetAddress.getLocalHost();
         String identifier = args[0];
         String destination = args[1];
-        recievedMessages = new LinkedList<>();
 
         // creating a listener thread
         listener lThread = new listener(client);
@@ -37,6 +33,7 @@ public class UserClient {
             byte[] msg = (identifier + " " + destination + " " + seq).getBytes();
             // Initialize new packet to be sent and send it.
             DatagramPacket send = new DatagramPacket(msg, msg.length, ip, 8888);
+            System.out.println("Sending: "+identifier + " " + destination + " " + seq);
             client.send(send);
             // Sleep for half a second before sending next packet.
             Thread.sleep(500);
@@ -70,6 +67,7 @@ class listener extends Thread {
             try {
                 recievePackets();
             } catch (Exception e) {
+                return;
             }
         }
         return;
@@ -86,7 +84,7 @@ class listener extends Thread {
         try {
             client.receive(recieved);
         } catch (Exception e) {
-            System.out.println("Listening in the background!");
+            return;
         }
         String message = new String(recieved.getData(), 0, recieved.getLength()).trim();
         System.out.println("Message from server: "+message);
