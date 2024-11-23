@@ -19,10 +19,10 @@ public class UnreliableChannel {
     private static int maxD;
     private static int totalDelayAtoB=0;
     private static int totalDelayBtoA=0;
-    private static int pktsFromADelayed=0;
-    private static int pktsFromBDelayed=0;
-    private static int pktsFromALost=0;
-    private static int pktsFromBLost=0;
+    private static int packetsFromADelayed=0;
+    private static int packetsFromBDelayed=0;
+    private static int packetsFromALost=0;
+    private static int packetsFromBLost=0;
 
     // serverSend()
     // Expects: Nothing
@@ -30,11 +30,11 @@ public class UnreliableChannel {
     // sending queued packets to their respective destinations.
     public static void serverSend() throws Exception {
         while (!messageQueue.isEmpty()) {
-            DatagramPacket i = messageQueue.poll();
+            DatagramPacket current = messageQueue.poll();
             // Store the message to be sent in a byte array.
-            byte[] message = i.getData();
+            byte[] message = current.getData();
             // Get destination which is at index 2 our string and of length 1 ("A B 0")
-            String destination = new String(i.getData(), 2, 1);
+            String destination = new String(current.getData(), 2, 1);
             // Get the port of the destination from the hashmap.
             int port;
             if (clients.containsKey(destination)) {
@@ -45,46 +45,49 @@ public class UnreliableChannel {
             }
             //random variables that will determine whether we drop the packet or not
             Random rand = new Random();
-            int rndDrop = rand.nextInt(101);
+            int pktLossChance = rand.nextInt(101);
 
             //if random variable is less than probability, we will send the packet
-            if(prob*100>=(float)(rndDrop)){
+            if((float)pktLossChance >= prob*100){
                 // Intialize new packet to be sent. Note that since this is running locally we
                 // do not need to get the IP address of the destination,only the port.
-                DatagramPacket send = new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port);
-                try {
+                DatagramPacket packetToBeSent = new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port);
+                
                     // Get a random delay between the specified range
                     int delay = minD+rand.nextInt((maxD - minD) + 1);
-
                     // Calculating the delay experienced by packets from A or B
-                    // and the amount of packets that got delayed
+                    // and tracking the number of packets that got delayed.
                     if(destination.equals("B")){
                         totalDelayAtoB+=delay;
-                        if(delay>0){
-                            pktsFromADelayed++;
+                        if(delay != minD){
+                            packetsFromADelayed++;
                         }
                     }
                     else{
                         totalDelayBtoA+=delay;
-                        if(delay>0){
-                            pktsFromBDelayed++;
+                        if(delay!= minD){
+                            packetsFromBDelayed++;
                         }
                     }
 
-                    // Applying that delay before sending the package
-                    Thread.sleep(delay);
-                    server.send(send);
-                } catch (Exception e) {
-                    System.out.println("failed to send");
-                    return;
-                }
+                //Initialize a thread that handles the sleeping so that packets are not send sequentially but can be sent in parallel.
+                   
+             //   new Thread(() -> {
+                    try {
+                        // Sleep this thread as necessary to simulate the delay, and then send the packet.
+                        Thread.sleep(delay);
+                        server.send(packetToBeSent);
+                    } catch (Exception e) {
+                        System.out.println("Failed to send");
+                    }
+               // }).start();
             }else{
-                // calculating the packets that got dropped
+                // Tracking the number of packets that got dropped.
                 if(destination.equals("B")){
-                    pktsFromALost++;
+                    packetsFromALost++;
                     continue;
                 }
-                pktsFromBLost++;
+                packetsFromBLost++;
             }
         }
 
@@ -139,12 +142,13 @@ public class UnreliableChannel {
             }
             // Here we initialize a string from the data we get from the client, however we
             // make sure to start reading from 0 only untill the length of the message.
-            // This prevents the slots that arent written too affecting the output.
+            // This prevents the slots in the buffer that arent written too affecting the output.
             String message = new String(messageFromClient.getData(), 0, messageFromClient.getLength());
             System.out.println(message);
             // When client sends end message, check if both clients have ended then stop.
-            //Note that in the cases where we recieve END signals we do not add them to the message Queue as they are not valid packets to be sent.
+            //Note that in the cases where we recieve END signals we do not add them to the message Queue as they are not valid messages to be sent.
             if (message.equals("END")) {
+                //We decrement number of messages to not consider the end signals.
                 nOfMessages--;
                 if (both) {
                     //send a message to both to stop listening
@@ -162,8 +166,8 @@ public class UnreliableChannel {
             }
         }
         
-        System.out.println("Packets received from user A: "+ (nOfMessages-pktsFromBLost) +" | Lost: "+pktsFromBLost+" | Delayed: "+pktsFromBDelayed);
-        System.out.println("Packets received from user B: "+ (nOfMessages-pktsFromALost) +"| Lost: "+pktsFromALost+"| Delayed: "+pktsFromADelayed);
+        System.out.println("Packets received from user A: "+ (nOfMessages/2) +" | Lost: "+packetsFromBLost+" | Delayed: "+packetsFromBDelayed);
+        System.out.println("Packets received from user B: "+ (nOfMessages/2) +"| Lost: "+packetsFromALost+"| Delayed: "+packetsFromADelayed);
         System.out.println("Average delay from A to B: "+ (float)(totalDelayAtoB)/nOfMessages+" ms.");
         System.out.println("Average delay from B to A: "+(float)(totalDelayBtoA)/nOfMessages+" ms.");
         server.close();

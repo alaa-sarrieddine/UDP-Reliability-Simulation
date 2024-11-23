@@ -1,10 +1,12 @@
 package Basic;
 
 import java.net.*;
+import java.util.LinkedList;
+import java.util.Queue;
 
 public class UserClient {
     private static DatagramSocket client;
-  
+    private static Queue<DatagramPacket> recievedMessages;
 
     public static void main(String[] args) throws Exception {
         // We make sure the operator input the source name and the destination.
@@ -15,10 +17,11 @@ public class UserClient {
         // Initalize socket for client to send and recieve packets, then set timeout to
         // 0.5 seconds.
         client = new DatagramSocket();
-        client.setSoTimeout(1);
+        client.setSoTimeout(1000);
         InetAddress ip = InetAddress.getLocalHost();
         String identifier = args[0];
         String destination = args[1];
+        recievedMessages = new LinkedList<>();
 
         // creating a listener thread
         listener lThread = new listener(client);
@@ -50,24 +53,23 @@ public class UserClient {
         client.close();
     }
 
-
 }
 
-class listener extends Thread{
+class listener extends Thread {
     private static DatagramSocket client;
-    private static boolean otherStopped=false;
+    private static boolean isListening = false;
 
     // thread object that will continously read incoming packets
-    listener(DatagramSocket Client){
+    listener(DatagramSocket Client) {
         client = Client;
     }
 
-    public void run(){
+    public void run() {
         // Recieves and reads the packets until the server closed communication
-        while(!otherStopped){
-            try{
+        while (!isListening) {
+            try {
                 recievePackets();
-            }catch(Exception e){
+            } catch (Exception e) {
             }
         }
         return;
@@ -83,12 +85,15 @@ class listener extends Thread{
         DatagramPacket recieved = new DatagramPacket(buffer, buffer.length);
         try {
             client.receive(recieved);
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            System.out.println("Listening in the background!");
+        }
         String message = new String(recieved.getData(), 0, recieved.getLength()).trim();
-        
-        //if communication has stopped, we need to stop listening from the socket
-        if(message.equals("Communication has stopped!")){ 
-            otherStopped=true;
+        System.out.println("Message from server: "+message);
+
+        // if communication has stopped, we need to stop listening from the socket
+        if (message.equals("Communication has stopped!")) {
+            isListening = true;
         }
     }
 
