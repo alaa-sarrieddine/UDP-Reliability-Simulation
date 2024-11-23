@@ -48,7 +48,7 @@ public class UnreliableChannel {
             int rndDrop = rand.nextInt(101);
 
             //if random variable is less than probability, we will send the packet
-            if(prob*100>=rndDrop){
+            if(prob*100>=(float)(rndDrop)){
                 // Intialize new packet to be sent. Note that since this is running locally we
                 // do not need to get the IP address of the destination,only the port.
                 DatagramPacket send = new DatagramPacket(message, message.length, InetAddress.getLocalHost(), port);
@@ -58,7 +58,7 @@ public class UnreliableChannel {
 
                     // Calculating the delay experienced by packets from A or B
                     // and the amount of packets that got delayed
-                    if(destination=="B"){
+                    if(destination.equals("B")){
                         totalDelayAtoB+=delay;
                         if(delay>0){
                             pktsFromADelayed++;
@@ -80,7 +80,7 @@ public class UnreliableChannel {
                 }
             }else{
                 // calculating the packets that got dropped
-                if(destination=="B"){
+                if(destination.equals("B")){
                     pktsFromALost++;
                     continue;
                 }
