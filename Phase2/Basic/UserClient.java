@@ -7,7 +7,7 @@ public class UserClient {
   
 
     public static void main(String[] args) throws Exception {
-        // We make sure the operator inputs the source name and the destination.
+        // We make sure the operator input the source name and the destination.
         if (args.length < 2) {
             System.out.println("Please enter source, and destination(java Userclient <source> <destination>)");
             return;
