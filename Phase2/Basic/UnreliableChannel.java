@@ -66,7 +66,7 @@ public class UnreliableChannel {
         System.out.println("Rand is:" + pktLossRandomVariable);
         // if random variable is greater than packetloss chance, we will send the
         // packet
-        if (pktLossRandomVariable >= packetLossChance * 100) {
+        if (pktLossRandomVariable > packetLossChance * 100) {
             // Intialize new packet to be sent. Note that since this is running locally we
             // do not need to get the IP address of the destination,only the port.
             DatagramPacket packetToBeSent = new DatagramPacket(message, message.length, InetAddress.getLocalHost(),
@@ -220,7 +220,7 @@ public class UnreliableChannel {
 
         // Create socket at port 8888 to listen for client messages, and facilitate the
         // sending of messages.
-        server = new DatagramSocket(8889);
+        server = new DatagramSocket(8888);
         while (true) {
             //New buffer initialized for each packet to make sure their packets get allcated on the heap when they are being sent between users and functions.
             byte[] buffer = new byte[1024];
@@ -269,7 +269,9 @@ public class UnreliableChannel {
                 + " | Delayed: " + packetsFromADelayed);
         
         // This avoids the error encountered when dividing by 0
-        // in the case where packetsFromADelayed | packetsFromBDelayed = 0 
+        // in the case where packetsFromADelayed or packetsFromBDelayed = 0.
+        // Alternatively, this could be done by setting the answer to "undefined"
+        // when divisor = 0
         float avgPacketDelayAToB = (packetsFromADelayed == 0) ? 0.0f : (float) totalDelayA / packetsFromADelayed;
         float avgPacketDelayBToA = (packetsFromBDelayed == 0) ? 0.0f : (float) (totalDelayB) / packetsFromBDelayed;
 
