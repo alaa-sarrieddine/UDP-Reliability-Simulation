@@ -29,7 +29,7 @@ public class UserClient {
                 if(endMessageSent==false){
                     // Send final packet with end message.
                     byte[] endMessage = "END".getBytes();
-                    DatagramPacket last = new DatagramPacket(endMessage, endMessage.length, ip, 8885);
+                    DatagramPacket last = new DatagramPacket(endMessage, endMessage.length, ip, 8888);
                     client.send(last);
                 }
             }catch(Exception e){
@@ -80,7 +80,7 @@ public class UserClient {
             // Formulate our message to be sent.
             byte[] msg = (identifier + " " + destination + " " + seq).getBytes();
             // Initialize new packet to be sent and send it.
-            DatagramPacket send = new DatagramPacket(msg, msg.length, ip, 8885);
+            DatagramPacket send = new DatagramPacket(msg, msg.length, ip, 8888);
             System.out.println("Sending: "+identifier + " " + destination + " " + seq);
             client.send(send);
             // Sleep for half a second before sending next packet.
@@ -93,7 +93,7 @@ public class UserClient {
         accessToEndMessageFlag.acquire();
         // Send final packet with end message.
         byte[] endMessage = "END".getBytes();
-        DatagramPacket last = new DatagramPacket(endMessage, endMessage.length, ip, 8889);
+        DatagramPacket last = new DatagramPacket(endMessage, endMessage.length, ip, 8888);
         client.send(last);
         endMessageSent=true;
         accessToEndMessageFlag.release();
@@ -171,9 +171,7 @@ class listener extends Thread {
  * 
  * If client program started before server, it will never close the socket because we are continously
  * listening to the server
- *    - suggestion, add a timer which could close the thread after t seconds has passed
+ *    - solve through the use of an optional timer. We will add this in the report.
  * 
  * Timeout doesn't change the speed of concurrency, very negligible improvements
- * 
- * client processes are binded to unique ports
  */

@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Random;
+import java.util.Scanner;
 import java.util.concurrent.Semaphore;
 import java.util.HashSet;
 
@@ -23,7 +24,27 @@ public class UnreliableChannel {
     private static int packetsFromBDelayed = 0;
     private static int packetsFromALost = 0;
     private static int packetsFromBLost = 0;
-    private static DelayDistribution distribution;
+    private static DelayDistribution distribution = DelayDistribution.uniform;
+    private static pktLossPatterns pktLossPattern = pktLossPatterns.standard;
+    
+    // Boolean to track whether or not we are
+    // in a burst state for our custom packet loss pattern
+    private static boolean currentBurstState = false;
+    // Counter for the amount of packets lost in
+    // current burst state
+    private static int pktsLostInBurst = 0;
+
+    // The initial state in the Markov Model
+    // for packet loss patterns is true. Here,
+    // true indicates a "good" state while false indicates
+    // a "bad" state
+    private static boolean currentLossState = true;
+
+    // This semaphore will be used to make sure the current state and 
+    // information about packet loss patterns are accessed in a thread
+    // safe manner.
+    private static Semaphore accessToCurrentState = new Semaphore(1, true);
+
     // Boolean that indicates whether there are still messages being sent or not
     private static boolean serverIsSendingMessages = true;
     private static boolean moreThanTwoClients = false;
@@ -34,77 +55,237 @@ public class UnreliableChannel {
     private static Semaphore accessToQueue = new Semaphore(1, true);
     private static Semaphore accessToStatistics = new Semaphore(1, true);
 
+    static enum pktLossPatterns{
+        custom,
+        markov,
+        standard,
+    }
+
+    public static void packetLossPatternChoice(){
+        Scanner in = new Scanner(System.in);
+        System.out.println("If you would like a specific packet loss pattern," + 
+                            " choose from the below:\n1) markov\n2) custom\n3) standard");
+        try {
+            // Parse the argument into a pktLossPattern enum
+            pktLossPattern = pktLossPatterns.valueOf(in.nextLine().toLowerCase());
+        } catch (IllegalArgumentException | ArrayIndexOutOfBoundsException e) {
+            // Handle invalid input or no input case
+            System.out.println("Invalid or missing input. Defaulting to the use of the real constant as a " +
+                                "probabilistic loss rate factor (standard model).");
+        }
+        in.close();
+    }
+
+    public static boolean loseThisPacket(Random rand){
+        switch(pktLossPattern){
+            // Gilbert-Elliot model for Packet Loss (Based on )
+            case markov:
+            try{
+                // We will consider true to indicate a "good" state while
+                // false to indicate a "bad" state
+
+                // Could've probabily used accessToStatistics but thats
+                // a minor issue, CHECK BEFORE FINAL SUBMISSION
+                accessToCurrentState.acquire();
+                // Probability of transitioning from "bad" to "good" state
+                double probBadToGood = 0.4; 
+                // Probability of transitioning from "good" to "bad" state
+                double probGoodToBad = 0.15;
+                // Probability of losing a packet while being in a "good" state
+                double goodStatePktLossProb = 0.02;
+                // Probability of losing a packet while being in a "bad" state
+                double badStatePktLossProb = 0.75; 
+                
+                //random double in range [0,1]
+                double randDouble = (double)(rand.nextInt(101))/100;;
+
+                // STATE TRANSITIONS
+                // Transition to "bad" state if: If we are in a "good" state
+                // and the random double is greater than our probGoodToBad
+                if (randDouble < probGoodToBad && currentLossState == true) {
+                    currentLossState = false;
+                }
+                // Transition to "good" state if: we are in a "bad" state
+                // and the random double is greater than our probBadToGood
+                else if (randDouble < probBadToGood && currentLossState == false) {
+                    currentLossState = false;
+                }
+                
+                // Determine the probability to lose a packet 
+                // based on our current state
+                double currentLossChance = (currentLossState == true) ? goodStatePktLossProb : badStatePktLossProb;
+                
+                // Random double in range [0,1]
+                // We are getting a new random variable to
+                // make the output independent of the previous
+                // randomization
+                randDouble = (double)(rand.nextInt(101))/100;;
+                // If random double is smaller than the probability for
+                // a packet to be lost in our given state, return false.
+                // In other words, return "Don't lose this packet"
+                accessToCurrentState.release();
+                if (rand.nextDouble() < currentLossChance) {return false;}
+                return true;
+
+            }catch(Exception e){
+                System.out.println(e);
+            }
+
+            // Custom generator for bursty packet loss utilizing
+            // the concept of states.
+            case custom:
+            try{
+                accessToCurrentState.acquire();
+                // Number of consecutive packets to drop
+                // while in a burst state
+                int lengthOfBurst = 6;
+                
+                // Probability of transitioning into a
+                // burst state
+                double probToGoInBurstState = 0.3;
+                
+                // This will store the result of our choice
+                boolean packetWillBeLost= false;
+
+                // Conditional for when we are in the burst state
+                if (currentBurstState) {
+                    pktsLostInBurst++;
+                    // Once we reached the amount of packets that
+                    // could be dropped given lengthOfBurst, we
+                    // should transition back to the non-burst state.
+                    if (lengthOfBurst < pktsLostInBurst) {
+                        pktsLostInBurst = 0;
+                        currentBurstState = false; 
+                        // Here we don't lose the packet since we've
+                        // already lost the length's worth of packets
+                        packetWillBeLost = false;
+                    }
+                    // If we haven't yet lost enough packets,
+                    // we will lose until we can't no more
+                    // "inserts a motivational background song"
+                    packetWillBeLost = true;   
+                } 
+                // If we are not in a burst state 
+                else {
+                    double randDouble = (double)(rand.nextInt(101))/100;
+                    // If random variable is less than the probability
+                    // to enter the the burst phase, we enter the burst phase
+                    if (randDouble < probToGoInBurstState) {
+                        currentBurstState = true;
+                        // I don't know if this is needed
+                        pktsLostInBurst = 0;
+                        
+                        // Start loosing packets
+                        pktsLostInBurst++;
+                        packetWillBeLost = true;
+                    }
+                    packetWillBeLost = false;
+                }
+                accessToCurrentState.release();
+                return packetWillBeLost;
+            }catch(Exception e){
+                System.out.println(e);
+            }
+
+            
+            // The ordinary packet loss pattern based on
+            // probabilisitc loss rate factor
+            case standard:
+                // Getting a random integer in the range of [0,100] 
+                int pktLossRandomVariable = rand.nextInt(101);
+                // if random variable is greater than packetloss chance, we will send the
+                // packet
+                return (pktLossRandomVariable > packetLossChance * 100) ? false : true;
+            default:
+                throw new IllegalArgumentException("Error in identifying the distribution");
+        }
+    }
+
     // enum for all the distributions implemented
-    enum DelayDistribution {
+    static enum DelayDistribution {
         uniform,
         guassian,
         exponential,
         triangular,
     }
 
-    private static int generateDelay(int minDelay, int maxDelay, Random rand) {
+    public static int generateDelay(int minDelay, int maxDelay, Random rand) {
         switch (distribution) {
+            // Guassian Distribution
             case guassian:
-                // calculate the mean from the delay range given
+                // We will choose the mean to be the midpoint
+                // of the given delay range.
                 double mean = (minDelay + maxDelay) / 2.0;
-                // calculate the approx. standard deviation
-                // using the 3-sigma rule; about 99.7% of values
-                // will fall within 3 stndDev from the mean
+                // We approximate the standard deviation using the 
+                // 3-sigma rule which states that 99.7% of the values
+                // in this distribution fall withing 3 standard deviations
+                // from the mean
                 double standardDev = (maxDelay - minDelay) / 6.0;
                 int gaussianDelay;
                 do {
-                    // we generate a delay as per the guassian/normal
-                    // distribution formula
-                    gaussianDelay = (int) (mean + rand.nextGaussian() * standardDev);
-                    // if the delay is outside our range, we generate a new delay
+                    // We first generate a value from a normal
+                    // distribution over the range of [0,1]
+                    double normalyDistributedValue = rand.nextGaussian(); 
+                    // Then, we scale and shift this value to acheive
+                    // our desired output
+                    gaussianDelay = (int) (mean + normalyDistributedValue * standardDev);
+                    // if the delay is outside our range, we generate a new delay.
+                    // This is highly unlikely as we are covering 99.7% of the
+                    // range through the 3-sigma property
                 } while (gaussianDelay < minDelay || gaussianDelay > maxDelay);
                 return gaussianDelay;
-    
+                
+            // Exponential Distribution
             case exponential:
-                // for now, the mean of the exponential distrobution
-                // is going to be the midpoint of our range. This
-                // could be changed in the future, CHECK BEFORE FINAL VERSION!!
+                // We will choose the mean of the rate parameter
+                // to be our midpoint.
                 double lambda = 1.0 / ((maxDelay - minDelay) / 2.0);
                 int exponentialDelay;
                 do {
-                    // solving for x in the exponential distribution CDF
+                    // Get a unirformly distributed variable in
+                    // the range of [0,1). This is perfect since if 1 was allowed, 
+                    // it would correspond to an infinite value per this CDF
+                    double uniformRandVar = rand.nextDouble(); 
+
+                    // Solving for x in the exponential distribution CDF
                     // we get the formula below. Checkout inverse transform
                     // sampling method for more on this technique.
-                    exponentialDelay = minDelay + (int) (-1*(Math.log(1 - rand.nextDouble())/ lambda));
-                } while (exponentialDelay < minDelay || exponentialDelay > maxDelay); // Keep within bounds
+                    exponentialDelay = minDelay + (int) (-1*(Math.log(1 - uniformRandVar)/ lambda));
+                    System.out.println("Delay we got is: "+ exponentialDelay);
+                } while (exponentialDelay < minDelay || exponentialDelay > maxDelay);
                 return exponentialDelay;
-    
+            
+            // Triangular Distribution
             case triangular:
-                // here we chose the peak of our distribution
+                // Here we chose the peak of our distribution
                 // to be our midpoint. Again, we can ask the user
                 // for this information but this gets the job done.
                 double mode = (minDelay + maxDelay) / 2.0;
                 //random float in range [0,1)
                 double u = rand.nextDouble();
                 int triangularDelay;
-                // now we will have to determine where our random value
+                // Now we will have to determine where our random value
                 // falls in the distribution: left or right side. This
                 // condition checks whether our random variable is increasing
                 // linearly towards the mode 
-                if (u < (mode - minDelay) / (maxDelay - minDelay)) {
+                if ((mode - minDelay) / (maxDelay - minDelay) > u) {
                     // random variable on the left side, calculate accordingly
-                    triangularDelay = (int) (Math.sqrt((maxDelay - minDelay) * u * (mode - minDelay))+minDelay);
+                    triangularDelay = (int) (Math.sqrt((maxDelay - minDelay) * u * (mode - minDelay)) + minDelay);
                 } else {
                     // random variable on the right side, calculate accordingly
                     triangularDelay = (int) (maxDelay - Math.sqrt((maxDelay - minDelay) * (1 - u) * (maxDelay - mode)));
                 }
                 return triangularDelay;
             
+            // Uniform Distribution
             case uniform: 
-                // this one is the toughest one yet!
+                // Concise, simple, and clean
                 return minDelay + rand.nextInt((maxDelay - minDelay) + 1);
 
             default:
                 throw new IllegalArgumentException("Error in identifying the distribution");      
         }
     }
-    
-
     // serverSend()
     // Expects: Nothing
     // Returns: nothing, but is responsible for
@@ -132,21 +313,21 @@ public class UnreliableChannel {
             accessToQueue.release();
             return;
         }
-        // random variables that will determine whether we drop the packet or not
+        // Random number generator used in getting the
+        // delay and packet loss
         Random rand = new Random();
-        int pktLossRandomVariable = rand.nextInt(101);
-        System.out.println("Rand is:" + pktLossRandomVariable);
-        // if random variable is greater than packetloss chance, we will send the
-        // packet
-        if (pktLossRandomVariable >= packetLossChance * 100) {
+
+        if (!loseThisPacket(rand)) {
             // Intialize new packet to be sent. Note that since this is running locally we
             // do not need to get the IP address of the destination,only the port.
             DatagramPacket packetToBeSent = new DatagramPacket(message, message.length, InetAddress.getLocalHost(),
                     port);
 
-            // Get a random delay betweem ,mindDelay, and maxDelay
+            // Get a delay from the inputted distribution and,
+            // minDelay and maxDelay values
             int delay = generateDelay(minDelay, maxDelay, rand);
-
+            System.out.println("Packet Experienced "+delay+" ms delay.");
+            
             try {
                 // Sleep this thread as necessary to simulate the delay, and then send the
                 // packet.
@@ -224,10 +405,10 @@ public class UnreliableChannel {
                 // basically as shorthand for making a thread and giving it a function to
                 // execute.
                 Thread messageSender = new Thread(() -> {
-                    try {    
+                    try {
                         serverSend(messageToBeSent);
                     } catch (Exception e) {
-                        System.out.println(e);
+                        System.out.println("error");
                     }
                 });
                 messageSender.start();
@@ -276,6 +457,9 @@ public class UnreliableChannel {
         minDelay = Integer.parseInt(args[1]);
         maxDelay = Integer.parseInt(args[2]);
 
+        // The fourth argument is reserved for deciding
+        // which delay distribution the user wants to 
+        // choose.
         try {
             // Parse the argument into a DelayDistribution enum
             distribution = DelayDistribution.valueOf(args[3].toLowerCase());
@@ -283,6 +467,11 @@ public class UnreliableChannel {
             // Handle invalid input or no input case
             System.out.println("Invalid or missing input. Defaulting to uniform distribution.");
         }
+        // Let's the user choose one of the 
+        // packet loss patterns we've implemented
+        packetLossPatternChoice();
+
+
 
         clients = new HashMap<>();
         messageQueue = new LinkedList<>();
@@ -301,7 +490,7 @@ public class UnreliableChannel {
 
         // Create socket at port 8888 to listen for client messages, and facilitate the
         // sending of messages.
-        server = new DatagramSocket(8885);
+        server = new DatagramSocket(8888);
         while (true) {
             //New buffer initialized for each packet to make sure their packets get allcated on the heap when they are being sent between users and functions.
             byte[] buffer = new byte[1024];
@@ -350,7 +539,9 @@ public class UnreliableChannel {
                 + " | Delayed: " + packetsFromADelayed);
         
         // This avoids the error encountered when dividing by 0
-        // in the case where packetsFromADelayed | packetsFromBDelayed = 0 
+        // in the case where packetsFromADelayed or packetsFromBDelayed = 0.
+        // Alternatively, this could be done by setting the answer to "undefined"
+        // when divisor = 0
         float avgPacketDelayAToB = (packetsFromADelayed == 0) ? 0.0f : (float) totalDelayA / packetsFromADelayed;
         float avgPacketDelayBToA = (packetsFromBDelayed == 0) ? 0.0f : (float) (totalDelayB) / packetsFromBDelayed;
 
