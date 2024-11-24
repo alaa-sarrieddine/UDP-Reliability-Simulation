@@ -55,12 +55,19 @@ public class UnreliableChannel {
     private static Semaphore accessToQueue = new Semaphore(1, true);
     private static Semaphore accessToStatistics = new Semaphore(1, true);
 
+    // enum for all packet loss patterns implemented
     static enum pktLossPatterns{
         custom,
         markov,
         standard,
     }
 
+    // packetLossPatternChoice()
+    // Expects: Nothing. Reads user input from the console 
+    //          to determine the packet loss pattern.
+    // Returns: Nothing. Sets the global `pktLossPattern` variable 
+    //          based on user input.
+    // Notes: Defaults to the "standard" model if invalid input is provided.
     public static void packetLossPatternChoice(){
         Scanner in = new Scanner(System.in);
         System.out.println("If you would like a specific packet loss pattern," + 
@@ -76,9 +83,18 @@ public class UnreliableChannel {
         in.close();
     }
 
+    // loseThisPacket(Random rand)
+    // Expects: A `Random` object to generate random numbers for calculations.
+    // Returns: A boolean indicating whether the current packet should be 
+    //          lost (true if lost, false otherwise).
+    // Notes: Implements three loss patterns: 
+    //        - `markov` for Gilbert-Elliot model-based loss.
+    //        - `custom` for burst loss with a configurable burst length.
+    //             - This model has no packet loss if not in burst state.
+    //        - `standard` for probabilistic loss with a fixed chance.
     public static boolean loseThisPacket(Random rand){
         switch(pktLossPattern){
-            // Gilbert-Elliot model for Packet Loss (Based on )
+            // Gilbert-Elliot model for Packet Loss (Based on Markov 2-state model)
             case markov:
             try{
                 // We will consider true to indicate a "good" state while
@@ -204,15 +220,29 @@ public class UnreliableChannel {
     // enum for all the distributions implemented
     static enum DelayDistribution {
         uniform,
-        guassian,
+        gaussian,
         exponential,
         triangular,
     }
 
+    // generateDelay(int minDelay, int maxDelay, Random rand)
+    // Expects: 
+    //    - `minDelay` - integer type : The minimum delay in milliseconds.
+    //    - `maxDelay` - integer type : The maximum delay in milliseconds.
+    //    - `rand` - Random type : A `Random` object to generate random 
+    //               values for calculations.
+    // Returns: An integer representing the delay in milliseconds, 
+    //          sampled from the chosen delay distribution.
+    // Notes: Implements four distributions:
+    //        - `uniform`: Uniform distribution between `minDelay` and `maxDelay`.
+    //        - `gaussian`: Normal distribution centered at the midpoint of the range.
+    //        - `exponential`: Exponential distribution with a rate parameter 
+    //                         derived from the range.
+    //        - `triangular`: Triangular distribution peaking at the midpoint.
     public static int generateDelay(int minDelay, int maxDelay, Random rand) {
         switch (distribution) {
-            // Guassian Distribution
-            case guassian:
+            // Gaussian Distribution
+            case gaussian:
                 // We will choose the mean to be the midpoint
                 // of the given delay range.
                 double mean = (minDelay + maxDelay) / 2.0;
