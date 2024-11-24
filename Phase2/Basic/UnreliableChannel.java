@@ -13,12 +13,12 @@ import java.util.HashSet;
 public class UnreliableChannel {
     private static DatagramSocket server;
     private static HashMap<String, Integer> clients;
-    private static Queue<DatagramPacket> messageQueue;
+    private static Queue<PacketObject> messageQueue;
     private static double packetLossChance;
     private static int minDelay;
     private static int maxDelay;
-    private static int totalDelayA = 0;
-    private static int totalDelayB = 0;
+    private static long totalDelayA = 0;
+    private static long totalDelayB = 0;
     private static int packetsFromADelayed = 0;
     private static int packetsFromBDelayed = 0;
     private static int packetsFromALost = 0;
@@ -37,14 +37,14 @@ public class UnreliableChannel {
     // Expects: Nothing
     // Returns: nothing, but is responsible for
     // sending queued packets to their respective destinations.
-    public static void serverSend(DatagramPacket current) throws Exception {
+    public static void serverSend(PacketObject current) throws Exception {
         if (current == null) {
             return;
         }
         // Store the message to be sent in a byte array.
-        byte[] message = current.getData();
+        byte[] message = current.packetData.getData();
         // Get destination which is at index 2 our string and of length 1 ("A B 0")
-        String destination = new String(current.getData(), 2, 1);
+        String destination = new String(current.packetData.getData(), 2, 1);
         // Get the port of the destination from the hashmap.
         int port;
         if (clients.containsKey(destination)) {
@@ -64,7 +64,7 @@ public class UnreliableChannel {
         Random rand = new Random();
         int pktLossRandomVariable = rand.nextInt(101);
         System.out.println("Rand is:" + pktLossRandomVariable);
-        // if random variable is greater than packetloss chancew, we will send the
+        // if random variable is greater than packetloss chance, we will send the
         // packet
         if (pktLossRandomVariable >= packetLossChance * 100) {
             // Intialize new packet to be sent. Note that since this is running locally we
@@ -74,26 +74,32 @@ public class UnreliableChannel {
 
             // Get a random delay betweem ,mindDelay, and maxDelay
             int delay = minDelay + rand.nextInt((maxDelay - minDelay) + 1);
-            // Calculating the delay experienced by packets from A or B
-            // and tracking the number of packets that got delayed, in a thread safe manner.
-            accessToStatistics.acquire();
-            if (destination.equals("B")) {
-                totalDelayA += delay;
-                // If the delay is equal to the minDelay then the packet wasnt delayed.
-                if (delay != minDelay) {
-                    packetsFromADelayed++;
-                }
-            } else {
-                totalDelayB += delay;
-                if (delay != minDelay) {
-                    packetsFromBDelayed++;
-                }
-            }
-            accessToStatistics.release();
+
             try {
                 // Sleep this thread as necessary to simulate the delay, and then send the
                 // packet.
                 Thread.sleep(delay);
+
+                // Calculating the delay experienced by packets from A or B
+                // and tracking the number of packets that got delayed, in a thread safe manner.
+                accessToStatistics.acquire();
+                if (destination.equals("B")) {
+                    // Here, the total delay is the delay experienced by each packet
+                    // since initially being put in a queue. The delayed packets are
+                    // those who recieved an additional delay because of the random
+                    // variables
+                    totalDelayA += System.currentTimeMillis() - current.receivedTime;
+                    // If the delay is equal to the minDelay then the packet wasnt delayed.
+                    if (delay != minDelay) {
+                        packetsFromADelayed++;
+                    }
+                } else {
+                    totalDelayB += System.currentTimeMillis() - current.receivedTime;
+                    if (delay != minDelay) {
+                        packetsFromBDelayed++;
+                    }
+                }
+                accessToStatistics.release();
                 server.send(packetToBeSent);
                 String test = new String(packetToBeSent.getData(), 0, packetToBeSent.getLength()).trim();
                 System.out.println("SYNCH sending following packet: " + test);
@@ -133,18 +139,21 @@ public class UnreliableChannel {
             } else if (moreThanTwoClients) {
                 // If there are enough clients we pop a packet from the queue under mutex, and
                 // then we initialize a new thread which is tasked with sending the packet.
-                DatagramPacket messageToBeSent = messageQueue.poll();
+                PacketObject messageToBeSent = messageQueue.poll();
                 accessToQueue.release();
                 // This part might be not needed we could maybe send messagetobesent, but I cant
                 // check it now CHECK BEFORE FINAL VERSION!
-                DatagramPacket finalPacket = new DatagramPacket(messageToBeSent.getData(), messageToBeSent.getLength(),
-                        messageToBeSent.getAddress(), messageToBeSent.getPort());
+
+                // Arthur: I think this is uneccessary because the object we are popping of off the queue 
+                // is unreachable by anyone other than the current thread
+                //DatagramPacket finalPacket = new DatagramPacket(messageToBeSent.getData(), messageToBeSent.getLength(),
+                //        messageToBeSent.getAddress(), messageToBeSent.getPort());
                 // Look up MultiThreading Lambda function to understand the syntax for this,
                 // basically as shorthand for making a thread and giving it a function to
                 // execute.
                 Thread messageSender = new Thread(() -> {
                     try {
-                        serverSend(finalPacket);
+                        serverSend(messageToBeSent);
                     } catch (Exception e) {
                         System.out.println("error");
                     }
@@ -211,7 +220,7 @@ public class UnreliableChannel {
 
         // Create socket at port 8888 to listen for client messages, and facilitate the
         // sending of messages.
-        server = new DatagramSocket(8888);
+        server = new DatagramSocket(8889);
         while (true) {
             //New buffer initialized for each packet to make sure their packets get allcated on the heap when they are being sent between users and functions.
             byte[] buffer = new byte[1024];
@@ -246,18 +255,37 @@ public class UnreliableChannel {
             } else {
                 moreThanTwoClients = true;
             }
-            // Add message to queue in a thread safe manner.
+            // Add packet object to queue in a thread safe manner.
             accessToQueue.acquire();
-            messageQueue.add(messageFromClient);
+            // Recording the time at which it has been added to the queue 
+            // to later use in delay calculation
+            messageQueue.add(new PacketObject(System.currentTimeMillis(), messageFromClient));
             accessToQueue.release();
         }
 
         System.out.println("Packets received from user A: " + (nOfMessages / 2) + " | Lost: " + packetsFromBLost
                 + " | Delayed: " + packetsFromBDelayed);
         System.out.println("Packets received from user B: " + (nOfMessages / 2) + "| Lost: " + packetsFromALost
-                + "| Delayed: " + packetsFromADelayed);
-        System.out.println("Average delay from A to B: " + (float) ((totalDelayA) / packetsFromADelayed) + " ms.");
-        System.out.println("Average delay from B to A: " + (float) ((totalDelayB) / packetsFromBDelayed) + " ms.");
+                + " | Delayed: " + packetsFromADelayed);
+        
+        // This avoids the error encountered when dividing by 0
+        // in the case where packetsFromADelayed | packetsFromBDelayed = 0 
+        float avgPacketDelayAToB = (packetsFromADelayed == 0) ? 0.0f : (float) totalDelayA / packetsFromADelayed;
+        float avgPacketDelayBToA = (packetsFromBDelayed == 0) ? 0.0f : (float) (totalDelayB) / packetsFromBDelayed;
+
+        System.out.println("Average delay from A to B: " + avgPacketDelayAToB + " ms.");
+        System.out.println("Average delay from B to A: " + avgPacketDelayBToA + " ms.");
         server.close();
     }
 }
+
+class PacketObject{
+    protected long receivedTime;
+    protected DatagramPacket packetData;
+    
+    public PacketObject(long receivedTime, DatagramPacket packetData){
+        this.packetData = packetData;
+        this.receivedTime = receivedTime;
+    }
+}
+
