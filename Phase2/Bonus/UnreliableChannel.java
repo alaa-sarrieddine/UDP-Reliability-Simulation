@@ -49,9 +49,9 @@ public class UnreliableChannel {
     private static boolean serverIsSendingMessages = true;
     private static boolean moreThanTwoClients = false;
     // Add the true attribute here to make sure the mutexes are starvation free (It
-    // insures a FIFO scheme). Additionally note that whenever the statistics or the
+    // insures a FIFO scheme). Additionally, note that whenever the statistics or the
     // messageQueue are accessed for the rest of the code this must be done with the
-    // mutex aquired for thread saftey.
+    // mutex acquired for thread saftey.
     private static Semaphore accessToQueue = new Semaphore(1, true);
     private static Semaphore accessToStatistics = new Semaphore(1, true);
 
@@ -93,6 +93,9 @@ public class UnreliableChannel {
     //             - This model has no packet loss if not in burst state.
     //        - `standard` for probabilistic loss with a fixed chance.
     public static boolean loseThisPacket(Random rand){
+        if (packetLossChance <= 0) {
+            return false;
+        }
         switch(pktLossPattern){
             // Gilbert-Elliot model for Packet Loss (Based on Markov 2-state model)
             case markov:
@@ -317,9 +320,8 @@ public class UnreliableChannel {
         }
     }
     // serverSend()
-    // Expects: Nothing
-    // Returns: nothing, but is responsible for
-    // sending queued packets to their respective destinations.
+    // Expects: A packet containing a message within which there is a valid destination.
+    // Returns: nothing, but is responsible for sending the packets to their correct destination.
     public static void serverSend(PacketObject current) throws Exception {
         if (current == null) {
             return;
@@ -447,7 +449,7 @@ public class UnreliableChannel {
             // Release the mutex for the case where there are messages but not more than two
             // clients.
             accessToQueue.release();
-            // Small sleep in the case the queue there isnt more than two clients to reduce
+            // Small sleep in the case there isnt more than two clients to reduce
             // the cpu overhead of the loop.
             Thread.sleep(10);
         }

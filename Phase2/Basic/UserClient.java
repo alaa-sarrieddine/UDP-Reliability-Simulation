@@ -59,6 +59,7 @@ public class UserClient {
         String identifier = args[0];
         String destination = args[1];
         if(args.length==3){
+            System.out.println("Please note you could have inputed the maximum time to execute (java Userclient <source> <destination> <programTimeLimit>)");
             // The third argument inputted by the user will be the maximum amount
             // of time the program can execute, in seconds.
             // This will be used to terminate the program in case it exceeded
@@ -71,9 +72,7 @@ public class UserClient {
         listener lThread = new listener(client);
         lThread.start();
 
-        // note we are only sending 10 packets for testing purposes MUST BE CHANGED FOR
-        // FINAL VERSION!!!
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 1000; i++) {
             // Sequence number is 0 on first packet sent 1 on second and it alternates as
             // per the equation below.
             int seq = i % 2;
@@ -163,15 +162,3 @@ class listener extends Thread {
     }
 
 }
-
-//Debugging Notes
-/*
- * Decreasing the timeout to 1 ms doesn't affect (1) clients' ability to properly read from the buffer
- * (2) clients ability to receive packets. Previous problems were from the server-side i believe.
- * 
- * If client program started before server, it will never close the socket because we are continously
- * listening to the server
- *    - solve through the use of an optional timer. We will add this in the report.
- * 
- * Timeout doesn't change the speed of concurrency, very negligible improvements
- */

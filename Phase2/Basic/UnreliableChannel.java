@@ -26,17 +26,19 @@ public class UnreliableChannel {
     // Boolean that indicates whether there are still messages being sent or not
     private static boolean serverIsSendingMessages = true;
     private static boolean moreThanTwoClients = false;
-    // Add the true attribute here to make sure the mutexes are starvation free (It
+    // Add the true attribute to the semaphores here to make sure the mutexes are
+    // starvation free (It
     // insures a FIFO scheme). Additionally note that whenever the statistics or the
     // messageQueue are accessed for the rest of the code this must be done with the
-    // mutex aquired for thread saftey.
+    // mutex acquired for thread saftey.
     private static Semaphore accessToQueue = new Semaphore(1, true);
     private static Semaphore accessToStatistics = new Semaphore(1, true);
 
     // serverSend()
-    // Expects: Nothing
-    // Returns: nothing, but is responsible for
-    // sending queued packets to their respective destinations.
+    // Expects: A valid PacketObject containing a valid datagram packet which has a
+    // valid destination.
+    // Returns: nothing, but is responsible for sednding the packet to its correct
+    // destination.
     public static void serverSend(PacketObject current) throws Exception {
         if (current == null) {
             return;
@@ -52,8 +54,8 @@ public class UnreliableChannel {
         } else {
             System.out.println("Invalid client packet not sent");
             // In the case we are sending a packet and its destination is invalid we re add
-            // it to the queue for when the destination eventually becomes valid (Needed for
-            // N clients, also works off the assumption that the destination inputed was
+            // it to the queue for when the destination eventually becomes valid (works off
+            // the assumption that the destination inputed was
             // correct otherwise infinite loop)
             accessToQueue.acquire();
             messageQueue.add(current);
@@ -62,11 +64,14 @@ public class UnreliableChannel {
         }
         // random variables that will determine whether we drop the packet or not
         Random rand = new Random();
-        int pktLossRandomVariable = rand.nextInt(101);
-        System.out.println("Rand is:" + pktLossRandomVariable);
+        int packetLossRandomVariable = rand.nextInt(101);
+        //Certain issues with how random works and doubles were causing an issue where even when packetLossChance was 0 some packets would be dropped this insures that doesnt happen.
+        if (packetLossChance <= 0) {
+            packetLossRandomVariable = 200;
+        }
         // if random variable is greater than packetloss chance, we will send the
         // packet
-        if (pktLossRandomVariable > packetLossChance * 100) {
+        if (packetLossRandomVariable > packetLossChance * 100) {
             // Intialize new packet to be sent. Note that since this is running locally we
             // do not need to get the IP address of the destination,only the port.
             DatagramPacket packetToBeSent = new DatagramPacket(message, message.length, InetAddress.getLocalHost(),
@@ -83,13 +88,11 @@ public class UnreliableChannel {
                 // Calculating the delay experienced by packets from A or B
                 // and tracking the number of packets that got delayed, in a thread safe manner.
                 accessToStatistics.acquire();
+                  //Here the delay is counted from the time of reception, untill they are sent (This helps account for the delay when one client starts sending before another.).
+                   //The packets considered "Delayed" are ones that face additional delay as a result of the random variables.
+                   // If the delay is equal to the minDelay then the packet was not delayed.
                 if (destination.equals("B")) {
-                    // Here, the total delay is the delay experienced by each packet
-                    // since initially being put in a queue. The delayed packets are
-                    // those who recieved an additional delay because of the random
-                    // variables
                     totalDelayA += System.currentTimeMillis() - current.receivedTime;
-                    // If the delay is equal to the minDelay then the packet wasnt delayed.
                     if (delay != minDelay) {
                         packetsFromADelayed++;
                     }
@@ -101,15 +104,12 @@ public class UnreliableChannel {
                 }
                 accessToStatistics.release();
                 server.send(packetToBeSent);
-                String test = new String(packetToBeSent.getData(), 0, packetToBeSent.getLength()).trim();
-                System.out.println("SYNCH sending following packet: " + test);
             } catch (Exception e) {
             }
 
         } else {
             // Tracking the number of packets that got dropped based on their destination
-            // which tells us where they came from(For N clients version use the source from
-            // the packet and an array representing the packets lost from each client).
+            // which tells us where they came from.
             if (destination.equals("B")) {
                 packetsFromALost++;
                 return;
@@ -120,12 +120,12 @@ public class UnreliableChannel {
     }
 
     public static void threadCreator() throws Exception {
-        // Check whether queue is empty or not in a thread safe manner.
+        // Check whether queue is empty or not, in a thread safe manner.
         accessToQueue.acquire();
         boolean queueContainsMessages = !messageQueue.isEmpty();
         accessToQueue.release();
         // While the queue contains messages to be sent, or the server is actively still
-        // recieving and sending messages we loop through.
+        // recieving and sending messages we loop.
         while (serverIsSendingMessages || queueContainsMessages) {
             // If the queue is empty we loop untill it isnt aslong as
             // serverIsSendingMessages is true
@@ -141,16 +141,7 @@ public class UnreliableChannel {
                 // then we initialize a new thread which is tasked with sending the packet.
                 PacketObject messageToBeSent = messageQueue.poll();
                 accessToQueue.release();
-                // This part might be not needed we could maybe send messagetobesent, but I cant
-                // check it now CHECK BEFORE FINAL VERSION!
-
-                // Arthur: I think this is uneccessary because the object we are popping of off the queue 
-                // is unreachable by anyone other than the current thread
-                //DatagramPacket finalPacket = new DatagramPacket(messageToBeSent.getData(), messageToBeSent.getLength(),
-                //        messageToBeSent.getAddress(), messageToBeSent.getPort());
-                // Look up MultiThreading Lambda function to understand the syntax for this,
-                // basically as shorthand for making a thread and giving it a function to
-                // execute.
+                //Make a new thread tasked with executing the serverSend() function for the message.
                 Thread messageSender = new Thread(() -> {
                     try {
                         serverSend(messageToBeSent);
@@ -222,7 +213,8 @@ public class UnreliableChannel {
         // sending of messages.
         server = new DatagramSocket(8888);
         while (true) {
-            //New buffer initialized for each packet to make sure their packets get allcated on the heap when they are being sent between users and functions.
+            // New buffer initialized for each packet to make sure their packets get
+            // allcated on the heap when they are being sent between users and functions.
             byte[] buffer = new byte[1024];
             nOfMessages++;
             // Initialize packet to be recieved and store data in the buffer.
@@ -241,7 +233,7 @@ public class UnreliableChannel {
                 // We decrement number of messages to not consider the end signals.
                 nOfMessages--;
                 if (both) {
-                    // Disable thread that is sending messages in the background
+                    // Disable thread that is sending messages in the background.
                     serverIsSendingMessages = false;
                     break;
                 }
@@ -257,7 +249,7 @@ public class UnreliableChannel {
             }
             // Add packet object to queue in a thread safe manner.
             accessToQueue.acquire();
-            // Recording the time at which it has been added to the queue 
+            // Recording the time at which it has been added to the queue
             // to later use in delay calculation
             messageQueue.add(new PacketObject(System.currentTimeMillis(), messageFromClient));
             accessToQueue.release();
@@ -267,7 +259,7 @@ public class UnreliableChannel {
                 + " | Delayed: " + packetsFromBDelayed);
         System.out.println("Packets received from user B: " + (nOfMessages / 2) + "| Lost: " + packetsFromALost
                 + " | Delayed: " + packetsFromADelayed);
-        
+
         // This avoids the error encountered when dividing by 0
         // in the case where packetsFromADelayed or packetsFromBDelayed = 0.
         // Alternatively, this could be done by setting the answer to "undefined"
@@ -281,13 +273,12 @@ public class UnreliableChannel {
     }
 }
 
-class PacketObject{
+class PacketObject {
     protected long receivedTime;
     protected DatagramPacket packetData;
-    
-    public PacketObject(long receivedTime, DatagramPacket packetData){
+
+    public PacketObject(long receivedTime, DatagramPacket packetData) {
         this.packetData = packetData;
         this.receivedTime = receivedTime;
     }
 }
-
