@@ -59,7 +59,6 @@ public class UserClient {
         String identifier = args[0];
         String destination = args[1];
         if(args.length==3){
-            System.out.println("Please note you could have inputed the maximum time to execute (java Userclient <source> <destination> <programTimeLimit>)");
             // The third argument inputted by the user will be the maximum amount
             // of time the program can execute, in seconds.
             // This will be used to terminate the program in case it exceeded
@@ -67,6 +66,7 @@ public class UserClient {
             programTimeLimit = Long.parseLong(args[2]) * 1000;
             System.out.println(programTimeLimit);
         }
+        System.out.println("Please note you could have inputed the maximum time to execute (java Userclient <source> <destination> <programTimeLimit>)");
 
         // creating a listener thread
         listener lThread = new listener(client);
