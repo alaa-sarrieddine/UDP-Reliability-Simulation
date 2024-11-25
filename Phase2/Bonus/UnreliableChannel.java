@@ -42,7 +42,7 @@ public class UnreliableChannel {
 
     // This semaphore will be used to make sure the current state and 
     // information about packet loss patterns are accessed in a thread
-    // safe manner.
+    // safe manner. (Used in 'markov' and 'custom' implementations)
     private static Semaphore accessToCurrentState = new Semaphore(1, true);
 
     // Boolean that indicates whether there are still messages being sent or not
@@ -93,40 +93,66 @@ public class UnreliableChannel {
     //             - This model has no packet loss if not in burst state.
     //        - `standard` for probabilistic loss with a fixed chance.
     public static boolean loseThisPacket(Random rand){
-        if (packetLossChance <= 0) {
-            return false;
-        }
         switch(pktLossPattern){
-            // Gilbert-Elliot model for Packet Loss (Based on Markov 2-state model)
+
+            // The ordinary packet loss pattern based on
+            // probabilisitc loss rate factor
+            case standard:
+                // Getting a random double in the range of [0.01,1] 
+                double pktLossRandomVariable = (rand.nextInt(100)+1.0)/100;
+                // If random variable is greater than packet loss chance,
+                // we will lose the packet and send true.
+                return (pktLossRandomVariable <= packetLossChance);
+
+
+            // The Gilbert-Elliott Model for Packet Loss
+            // Notes: - This is based on the classical 2-State Markov Model 
+            //        - The lengths of the lost packet sequences are 
+            //          geometrically distributed
             case markov:
             try{
-                // We will consider true to indicate a "good" state while
-                // false to indicate a "bad" state
+                // This model is implemented by:
+                // 1) Starting at the "good" state (beginning of the program)
+                // 2) Checking if we transition to the other state given the
+                //    current state's probability to do so.
+                // 3) Checking if we lose a packet given the current state's
+                //    probability.
+
+                // We will consider the boolean 'true' to indicate a "good" state while
+                // 'false' to indicate a "bad" state. A "good" state will refer
+                // to an event that has a low chance of losing a packet. While a "bad"
+                // state an event that has a higher changce of losing a packet.
 
                 // Could've probabily used accessToStatistics but thats
                 // a minor issue, CHECK BEFORE FINAL SUBMISSION
                 accessToCurrentState.acquire();
+
+                // Initializing variables that will determine the probabilities
+                // of losing a a packet given the curent state.
+                // Both have a range of [0,1]
+                double k = 0.9, h = 0.2;
+                // Probability of losing a packet while being in a "good" state
+                double goodStatePktLossProb = 1 - k;
+                // Probability of losing a packet while being in a "bad" state
+                double badStatePktLossProb = 1 - h; 
+
                 // Probability of transitioning from "bad" to "good" state
                 double probBadToGood = 0.4; 
                 // Probability of transitioning from "good" to "bad" state
-                double probGoodToBad = 0.15;
-                // Probability of losing a packet while being in a "good" state
-                double goodStatePktLossProb = 0.02;
-                // Probability of losing a packet while being in a "bad" state
-                double badStatePktLossProb = 0.75; 
+                double probGoodToBad = 0.2;
                 
-                //random double in range [0,1]
-                double randDouble = (double)(rand.nextInt(101))/100;;
+                //random double in range [0.01,1]
+                double randDouble = (rand.nextInt(100)+1.0)/100;
 
                 // STATE TRANSITIONS
                 // Transition to "bad" state if: If we are in a "good" state
                 // and the random double is greater than our probGoodToBad
-                if (randDouble < probGoodToBad && currentLossState == true) {
+                if (randDouble <= probGoodToBad && currentLossState == true) {
                     currentLossState = false;
                 }
                 // Transition to "good" state if: we are in a "bad" state
                 // and the random double is greater than our probBadToGood
-                else if (randDouble < probBadToGood && currentLossState == false) {
+                else if (randDouble <= probBadToGood && currentLossState == false) {
                     currentLossState = false;
                 }
                 
@@ -134,30 +160,31 @@ public class UnreliableChannel {
                 // based on our current state
                 double currentLossChance = (currentLossState == true) ? goodStatePktLossProb : badStatePktLossProb;
                 
-                // Random double in range [0,1]
+                // Random double in range [0.01,1]
                 // We are getting a new random variable to
                 // make the output independent of the previous
-                // randomization
-                randDouble = (double)(rand.nextInt(101))/100;;
+                // randomization.
+                randDouble = (rand.nextInt(100)+1.0)/100;
                 // If random double is smaller than the probability for
-                // a packet to be lost in our given state, return false.
-                // In other words, return "Don't lose this packet"
+                // a packet to be lost in current state, return false.
+                // In other words, return "Don't lose this packet". Else,
+                // return true.
                 accessToCurrentState.release();
-                if (rand.nextDouble() < currentLossChance) {return false;}
+                if (randDouble <= currentLossChance) {return false;}
                 return true;
 
             }catch(Exception e){
                 System.out.println(e);
             }
 
-            // Custom generator for bursty packet loss utilizing
-            // the concept of states.
+            // Custom generator for bursty/spikey packet loss utilizing
+            // the concept of states. (Inspired by Markov)
             case custom:
             try{
                 accessToCurrentState.acquire();
                 // Number of consecutive packets to drop
                 // while in a burst state
-                int lengthOfBurst = 6;
+                int lengthOfBurst = 8;
                 
                 // Probability of transitioning into a
                 // burst state
@@ -186,7 +213,8 @@ public class UnreliableChannel {
                 } 
                 // If we are not in a burst state 
                 else {
-                    double randDouble = (double)(rand.nextInt(101))/100;
+                    // Range of variable is [0.01, 1]
+                    double randDouble = (rand.nextInt(100)+1.0)/100;
                     // If random variable is less than the probability
                     // to enter the the burst phase, we enter the burst phase
                     if (randDouble < probToGoInBurstState) {
@@ -202,19 +230,17 @@ public class UnreliableChannel {
                 }
                 accessToCurrentState.release();
                 return packetWillBeLost;
+
+                // For future iterations, we could implement another 
+                // packet loss pattern while the current state is not
+                // the burst state. For instance, we could use our 
+                // 'markov' or 'standard' models to do so. In these cases,
+                // we would have achieved 2 states that lose packets.
+
             }catch(Exception e){
                 System.out.println(e);
             }
 
-            
-            // The ordinary packet loss pattern based on
-            // probabilisitc loss rate factor
-            case standard:
-                // Getting a random integer in the range of [0,100] 
-                int pktLossRandomVariable = rand.nextInt(101);
-                // if random variable is greater than packetloss chance, we will send the
-                // packet
-                return (pktLossRandomVariable > packetLossChance * 100) ? false : true;
             default:
                 throw new IllegalArgumentException("Error in identifying the distribution");
         }
@@ -284,7 +310,6 @@ public class UnreliableChannel {
                     // we get the formula below. Checkout inverse transform
                     // sampling method for more on this technique.
                     exponentialDelay = minDelay + (int) (-1*(Math.log(1 - uniformRandVar)/ lambda));
-                    System.out.println("Delay we got is: "+ exponentialDelay);
                 } while (exponentialDelay < minDelay || exponentialDelay > maxDelay);
                 return exponentialDelay;
             
