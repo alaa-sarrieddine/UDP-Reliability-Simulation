@@ -65,7 +65,9 @@ public class UnreliableChannel {
         // random variables that will determine whether we drop the packet or not
         Random rand = new Random();
         int packetLossRandomVariable = rand.nextInt(101);
-        //Certain issues with how random works and doubles were causing an issue where even when packetLossChance was 0 some packets would be dropped this insures that doesnt happen.
+        //Certain issues with how random works and doubles were causing an 
+        //issue where even when packetLossChance was 0 some packets would be 
+        //dropped this insures that doesnt happen.
         if (packetLossChance <= 0) {
             packetLossRandomVariable = 200;
         }

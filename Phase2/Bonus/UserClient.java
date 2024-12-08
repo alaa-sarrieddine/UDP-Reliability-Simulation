@@ -86,7 +86,6 @@ public class UserClient {
                     // we get the formula below. Checkout inverse transform
                     // sampling method for more on this technique.
                     exponentialDelay = minDelay + (int) (-1*(Math.log(1 - uniformRandVar)/ lambda));
-                    System.out.println("Delay we got is: "+ exponentialDelay);
                 } while (exponentialDelay < minDelay || exponentialDelay > maxDelay);
                 return exponentialDelay;
             

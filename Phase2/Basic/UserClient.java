@@ -66,7 +66,8 @@ public class UserClient {
             programTimeLimit = Long.parseLong(args[2]) * 1000;
             System.out.println(programTimeLimit);
         }
-        System.out.println("Please note you could have inputed the maximum time to execute (java Userclient <source> <destination> <programTimeLimit>)");
+        System.out.println("Please note you could have inputed the maximum time to execute" + 
+                                "(java Userclient <source> <destination> <programTimeLimit>)");
 
         // creating a listener thread
         listener lThread = new listener(client);
