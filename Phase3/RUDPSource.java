@@ -2,29 +2,22 @@ package Phase3;
 
 import java.io.FileInputStream;
 import java.net.*;
-import java.util.concurrent.Semaphore;
-import java.util.ArrayList;
-import java.util.LinkedList;
-import java.util.ArrayList;
-import java.lang.Object;
 
 public class RUDPSource {
     private static DatagramSocket client;
     private static InetAddress destinationIP;
     private static int destinationPortNumber;
     private static String filePath;
-    private static ArrayList<byte[]> senderWindow = new ArrayList<>();
-    private static int sendBase = 0;
-    private static int nextIndex = 0;
-    private static int windowSize = 7;
     private static int timeout = 1000;
     private static int maxRetransmissions = 5;
-    private static int TCPheaderSize = 20; // bytes
-    private static int TCPdataSize = 50;   // bytes
+    private static int TCPheaderSize = 16; // bytes
+    private static int TCPdataSize = 64;   // bytes
     private static int TCPSegmentSize = TCPheaderSize + TCPdataSize; //bytes
     private static int serverSeqNum = 0;
-
-    private static Semaphore accessToEndMessageFlag= new Semaphore(1, true);
+    private static int currentSegNum = 0;  // sendbase
+    private static int currentRetransmissions=0;
+    private static boolean noMoreData =false;
+    private static int seqNumIncrement=0;
 
     // Function to store user arguments from command line
     private static void storingUserArguments(String[] args){
@@ -54,370 +47,545 @@ public class RUDPSource {
     };
     
     // Function that computes the checksum of the header and data of the packet
-    public static int computeChecksum(byte[] packet){
-        int sum = 0;
-        for (int i = 0; i < packet.length; i += 2) {
-            // Convert the bytes into integers
-            int firstByte = packet[i] & 0xFF;
-            int secondByte = packet[i + 1] & 0xFF;
+    public static int computeChecksum(byte[] packet) {
+        int sum = 0, firstByte, secondByte;
 
-            // Add the bytes into the sum
-            sum += (firstByte << 8) + secondByte;
+        // To calculate the checksum, we need to add the 
+        // TCP pseudo-header, TCP header, and TCP data 
+        // Source IP (4 bytes)
+        // Source IP (convert to bytes)
+        byte[] srcIPBytes = client.getLocalAddress().getAddress();
+        for (int i = 0; i < 4; i += 2) {
+            int word = ((srcIPBytes[i] & 0xFF) << 8) | (srcIPBytes[i + 1] & 0xFF);
+            sum += word;
         }
-        while ((sum >> 16) > 0) {
-            sum = (sum & 0xFFFF) + (sum >> 16);
+
+        // Destination IP (convert to bytes)
+        byte[] destIPBytes = destinationIP.getAddress();
+        for (int i = 0; i < 4; i += 2) {
+            int word = ((destIPBytes[i] & 0xFF) << 8) | (destIPBytes[i + 1] & 0xFF);
+            sum += word;
         }
+
+        // Protocol (equal to six for TCP) (1 byte)
+        sum += (byte) 6 & 0xFF;
+
+        // Length (2 bytes)
+        sum += (byte) packet.length & 0xFFFF;
+        for (int i = 0; i < packet.length; i += 2) {
+            firstByte = packet[i] & 0xFF;
+
+            // If the packet has an odd number of bytes, pad with 0 for the last byte
+            if (i == packet.length - 1) {
+                secondByte = 0;
+            } else {
+                secondByte = packet[i + 1] & 0xFF;
+            }
+
+            // Combine the two bytes into a 16-bit word
+            int word = (firstByte << 8) | secondByte;
+
+            // Add the 16-bit word to the sum
+            sum += word;
+
+            // Handle wraparound (if the sum exceeds 16 bits)
+            if ((sum & 0xFFFF0000) != 0) {
+                // Carry occurred, so wrap around by adding the carry
+                sum = (sum & 0xFFFF) + (sum >> 16);
+            }
+        }
+
+        // One's complement of the sum
         return ~sum & 0xFFFF;
     }
 
-    // Function to check for any bit errors using checksum
-    public static boolean checkChecksum(byte[] packet){
-        int checksum = packet[16] << 8 | packet[17];
-        packet[16] = 0;
-        packet[17] = 0;
-        boolean res =  (checksum == computeChecksum(packet));
-        packet[16] = (byte) (checksum >> 8);
-        packet[17] = (byte) (checksum);
-        return res;
+    // Function that inserts the correct checksum into the header
+    public static void addChecksum(byte[] packet){
+        int checksum = computeChecksum(packet);
+        packet[12] = (byte) (checksum >> 8);
+        packet[13] = (byte) (checksum);
+        return;
     }
 
-    // Function to create a TCP header
-    public static byte[] createTCPHeader(int SeqNum, int ackNum, boolean syn, boolean ack, boolean fin){
-        byte[] header = new byte[20];
-        // Convert source port number to bytes and add to header
+    
+    public static boolean correctChecksum(byte[] packet) {
+        // Save the original checksum from the packet
+        int originalChecksum = (packet[12] << 8) | (packet[13] & 0xFF);
+    
+        // Temporarily set the checksum fields to 0 for computation
+        packet[12] = 0;
+        packet[13] = 0;
+    
+        // Recompute the checksum
+        int computedChecksum = computeChecksum(packet);
+    
+        // Restore the original checksum in the packet
+        packet[12] = (byte) (originalChecksum >> 8);
+        packet[13] = (byte) (originalChecksum);
+    
+        // Validation: Check if recomputed checksum is 0
+        return computedChecksum == 0;
+    }
+    
+
+    // Function to create a custom TCP header
+    // Input: - (int) sequence number: the sequence number of the first byte
+    //                               in the segment
+    //        - (int) acknowledgement number: the next sequence number expected
+    //                                      from the other
+    //        - (bool) SYN: Synchronization event
+    //        - (bool) ACK: Acknowledging sequence numbers event
+    //        - (bool) FIN: Closing connection event
+    //
+    // Output: a byte array that represents a TCP header and 
+    //         contains all the information needed to correctly 
+    //         read and assemble the data.
+    //
+    // Header format:
+    //     <------------- 32 bits -------------> 
+    //     |   source port #  |   dest. port # |  
+    //     |          Sequence number          |
+    //     |       Acknowledgement number      |
+    //     |   Checksum    | Header len | flgs |
+    
+    public static byte[] createTCPHeader(int AckNum, boolean SYN, 
+                                         boolean ACK, boolean FIN){
+        byte[] header = new byte[16];
+
+        // SRC PORT NUMBER: 16-bits
         header[0] = (byte) (client.getLocalPort() >> 8);
         header[1] = (byte) (client.getLocalPort());
 
-        // Convert destination port number to bytes and add to header
+        // DEST PORT NUMBER: 16-bits
         header[2] = (byte) (destinationPortNumber >> 8);
         header[3] = (byte) (destinationPortNumber);
 
-        // Convert sequence number to bytes and add to header
-        header[4] = (byte) (SeqNum >> 24);
-        header[5] = (byte) (SeqNum >> 16);
-        header[6] = (byte) (SeqNum >> 8);
-        header[7] = (byte) (SeqNum);
+        // SEQ NUMBER: 32-bits
+        header[4] = (byte) (currentSegNum >> 24);
+        header[5] = (byte) (currentSegNum >> 16);
+        header[6] = (byte) (currentSegNum  >> 8);
+        header[7] = (byte) (currentSegNum );
 
-        // Convert acknowledgement number to bytes and add to header
-        header[8] = (byte) (ackNum >> 24);
-        header[9] = (byte) (ackNum >> 16);
-        header[10] = (byte) (ackNum >> 8);
-        header[11] = (byte) (ackNum);
+        // ACK NUMBER: 32-bits
+        header[8] = (byte) (AckNum >> 24);
+        header[9] = (byte) (AckNum >> 16);
+        header[10] = (byte) (AckNum >> 8);
+        header[11] = (byte) (AckNum);
 
-        // Header length (storing them as a byte)
-        // This removes our ability to use the RSV field and the URG Flag
-        header[12] = (byte) (5);
+        // CHECKSUM: 16-bits
+        // Intialized to zero, will be computed later
+        header[12] = (byte) 0;
+        header[13] = (byte) 0;
 
-        // Flags
+        // HEADER LENGTH: 8-bits
+        // Amount of 4-byte words in header
+        header[14] = (byte) (4);
+        
+        // FLAGS: 8-bits
+        // We will only need the ACK, SYN, and FIN flags
         int sumOfFlags=0;
-        if(ack){
-            sumOfFlags+=128;
+        // ACK's bit will be the 3rd from the right
+        if(ACK){
+            sumOfFlags+=4;
         }
-        if(syn){
-            sumOfFlags+=8;
+        // SYN's bit will be the 2nd from the right
+        if(SYN){
+            sumOfFlags+=2;
         }
-        if(fin){
+        // FIN's bit will be the 1st from the right
+        if(FIN){
             sumOfFlags+=1;
         }
-        header[13] = (byte) sumOfFlags;
-        
-        // Window size for receiver congestion (for now, not used)
-        header[14] = 0;
-        header[15] = 0;
-
-        // Checksum (initially set to 0)
-        header[16] = 0;
-        header[17] = 0;
-
-        // Urgent pointer (not used)
-        header[18] = 0;
-        header[19] = 0;
-
-        // Compute checksum and add to header
-        int checksum = computeChecksum(header);
-        header[16] = (byte) (checksum >> 8);
-        header[17] = (byte) (checksum);
-
+        header[15] = (byte) sumOfFlags;
         return header;
     }
 
+    public static void printDataTrans(byte[] packetBytes){
+        // Getting sequence number from packetBytes by perfoming
+        // a bitwise to fit them all on to an int
+        int seqNum = packetBytes[4] << 24 | packetBytes[5] << 16 
+                    | packetBytes[6] << 8 | packetBytes[7];
+        System.out.println("[DATA TRANSMISSION]: " + seqNum + " | " + packetBytes.length);
+    }
+
     // Function to send connection management packets
-    public static void sendConnectionMngmtPacket(DatagramPacket packet, byte[] packetBytes, boolean retransmit){
-        int currentRetransmits = 0;
-        while(currentRetransmits<maxRetransmissions){
+    public static void sendAndWait(DatagramPacket packet, byte[] packetBytes, boolean retransmit){
+        int currentRetransmissions = 0;
+        while(currentRetransmissions < maxRetransmissions){
             try{
-                client.setSoTimeout(timeout);
                 client.send(packet);
-                // Used for ACK messages
-                if(!retransmit){
-                    return;
-                }
+                
+                // For debugging
+                printDataTrans(packetBytes);
 
                 // Wait for packet
-                byte[] dataReceived = new byte[TCPheaderSize];
+                // There MIGHT be an issue here with size. Some
+                // incoming packets will be less than the segment size.
+                // Couldn't test this.
+                byte[] dataReceived = new byte[TCPSegmentSize];
                 DatagramPacket ackPacket = new DatagramPacket(dataReceived, dataReceived.length);
                 client.receive(ackPacket);
 
-                // Check for bit errors
-                if (checkChecksum(dataReceived)) {
-                    return;
-                } else {
-                    throw new Exception("Checksum error");
+                byte[] ack_packet_data = ackPacket.getData();
+
+                // Check for bit errors or ACKs < Seq num
+                if(!correctChecksum(ack_packet_data) || negativeAck(ack_packet_data)){
+                    throw new SocketTimeoutException("Packet not received properly");
                 }
-            }catch(Exception e){
-                currentRetransmits++;
-                // Getting sequence number from packetBytes
-                int seqNum = packetBytes[4] << 24 | packetBytes[5] << 16 | packetBytes[6] << 8 | packetBytes[7];
-                System.out.println("[DATA TRANSMISSION]: "+seqNum+" | "+packetBytes.length);
+                currentRetransmissions=0;
+                    
+                serverSeqNum+=seqNumIncrement;
+                break;
             }
+            // If the timeout expires, we will increment the retransmissions
+            // count and retransmit in the next iteration
+            catch(SocketTimeoutException e){
+                currentRetransmissions++;
+            }
+            catch(Exception e){
+                System.out.println("Error occured while sending a packet :/\n"+e);
+                System.exit(1);
+            }            
         }
-        System.out.println("Connection failed to establish\n");
+        System.out.println("Connection failed to establish\n");     
         System.exit(1);
+    }
+
+    public static boolean negativeAck(byte[] TCPsegment){
+        int ackNumber = TCPsegment[4] << 24 | TCPsegment[5] << 16 
+                        | TCPsegment[6] << 8 | TCPsegment[7];
+        return ackNumber <= currentSegNum+1;
     }
 
     // Function to establish a connection
     public static void establishConnection(){
         try{
-            // Send SYN
-            byte[] SYN_msgData = createTCPHeader(0,0, true, false, false);
+            // Create the SYN message
+            // Our ISN will be 0 but we can randomize
+            // this in the future
+            byte[] SYN_msg_data = createTCPHeader(0, true, false, false);
+            addChecksum(SYN_msg_data);
 
-            DatagramPacket SYN_msg = new DatagramPacket(SYN_msgData, SYN_msgData.length, 
+            DatagramPacket SYN_msg = new DatagramPacket(SYN_msg_data, SYN_msg_data.length, 
                                                         destinationIP, destinationPortNumber);
             
-            sendConnectionMngmtPacket(SYN_msg, SYN_msgData, true);
-            
-            // Receive SYN-ACK
-            byte[] SYN_ACK_msgData = new byte[TCPheaderSize];
-            DatagramPacket SYN_ACK_msg = new DatagramPacket(SYN_ACK_msgData, SYN_ACK_msgData.length);
-            // SYN takes `1` byte
-            serverSeqNum++;
+            // Sending the SYN message and receiving/verifing the SYN-ACK response
+            while(currentRetransmissions <= maxRetransmissions){
+                try{
+                    client.send(SYN_msg);
+                    
+                    printDataTrans(SYN_msg_data);
+
+                    // Wait for SYN ACK response
+                    // Array size mismatch could be an issue here;
+                    // some packets are smaller than segment size.
+                    byte[] dataReceived = new byte[TCPSegmentSize];
+                    DatagramPacket ackPacket = new DatagramPacket(dataReceived, dataReceived.length);
+                    client.receive(ackPacket);
+
+                    byte[] SYN_ACK_msg = ackPacket.getData();  
+
+                    // We will have to retransmit if: 
+                    // 1) the syntax of the SYN_ACK message was incorrect, 
+                    // 2) acknowledgement has a seq num that is before our current seq num or
+                    // 3) we found bit errors in our message 
+                    if((int) SYN_ACK_msg[15] != 6 || negativeAck(SYN_msg_data) 
+                        || !correctChecksum(SYN_msg_data)){
+                        throw new SocketTimeoutException("Last message was not acknowledged");
+                    }
+
+                    // Save the server's ISN
+                    serverSeqNum = SYN_ACK_msg[4] << 24 | SYN_ACK_msg[5] << 16 
+                                  | SYN_ACK_msg[6] << 8 | SYN_ACK_msg[7]; 
+                    
+                    currentRetransmissions=0;
+                    
+                    // SYN takes `1` byte so, we update our seq
+                    // number accordingly
+                    serverSeqNum++;
+                    break;
+                }
+                // If the timeout expires, we will increment the retransmissions
+                // count and retransmit in the next iteration
+                catch(SocketTimeoutException e){
+                    currentRetransmissions++;
+
+                    if(currentRetransmissions>maxRetransmissions){
+                        System.out.println("Server is not responding :(\n");
+                        System.exit(1);
+                    }
+                }
+                catch(Exception e){
+                    System.out.println("Error occured while sending a packet :/\n"+e);
+                    System.exit(1);
+                }            
+            }
+            // After successfully recieving a SYN ACK message,
+            // will will establish a three-way handshake by 
+            // sending an ACK.
 
             // Send ACK (sequence number doesnt matter)
-            byte[] ACK_msgData = createTCPHeader(1, 1, 
-                                             false, true, false);
-            
-            DatagramPacket ACK_msg = new DatagramPacket(ACK_msgData, ACK_msgData.length, 
+            byte[] ACK_msg_data = createTCPHeader(serverSeqNum+1, false, 
+                                                 true, false);
+            addChecksum(ACK_msg_data);
+            DatagramPacket ACK_msg = new DatagramPacket(ACK_msg_data, ACK_msg_data.length, 
                                                         destinationIP, destinationPortNumber);
 
-            sendConnectionMngmtPacket(ACK_msg, ACK_msgData, false);
+            // Sending the ACK message and checking whether the reciever
+            // retransmited the SYN ACK response (in other words, receivedd this ACKed)
+            while(currentRetransmissions <= maxRetransmissions){
+                try{
+                    client.send(ACK_msg);
+                    
+                    printDataTrans(ACK_msg_data);
+
+                    // Wait for SYN ACK response
+                    // Array size mismatch could be an issue here;
+                    // some packets are smaller than segment size.
+                    byte[] dataReceived = new byte[TCPSegmentSize];
+                    DatagramPacket SYN_ACK_Packet = new DatagramPacket(dataReceived, dataReceived.length);
+                    client.receive(SYN_ACK_Packet);  
+                    
+                    // If SYN ACK was retransmitted, we
+                    // will retransmit the ACK message again
+                    currentRetransmissions++;
+
+                    if(currentRetransmissions>maxRetransmissions){
+                        System.out.println("The server wasn't able to successfully receive the"+
+                                            "ACK msg. Thus, the three-way handshake wasn't established\n");
+                        System.exit(1);
+                    }
+
+                    continue;
+                }
+                // If the timeout expires, that means the server received
+                // the message and did not need to retransmit
+                catch(SocketTimeoutException e){
+                    currentRetransmissions=0;                  
+                }
+                catch(Exception e){
+                    System.out.println("Error occured while sending a packet :/\n"+e);
+                    System.exit(1);
+                }            
+            }
 
         }catch(Exception e){
             System.out.println("Error in establishing connection!\n" + e);
             System.exit(-1);
         }
+        
+        // At this point, the three-way handshake has been established
+        // and we are ready to start sending data!
+        return;
     }
 
-    // Function that reads the input file and adds the packets 
-    // to the sender window. These packets will have the default headers 
-    // (all fields equal to zero) zero and the data will be the contents of the file
-    // NOTE FOR FUTURE: ALL THE DATA WILL BE READ INTO MEMORY, THIS MAY NOT BE THE BEST!!!
-    public static void addingPacketsToWindow(){
+    // Function that reads the input file and returns packet given
+    // the current segment number and the size of data 
+    public static byte[] returnNextSegment(){
         try{
+            // Get all the file's information and store it in 
+            // a byte array.
+            // Later might use buffered reader
+            // This is prone to memory segmentation
             FileInputStream fileInputStream = new FileInputStream(filePath);
             byte[] fileData = new byte[fileInputStream.available()];
             fileInputStream.read(fileData);
             fileInputStream.close();
+
+            // Size of the whole packet we will send
             int packetSize;
 
-            // Because SYN will take 1 byte
-            int currentByteSeq = 1;
-
-            for (int i = 0; i < fileData.length; i += TCPdataSize) {
-                int remainingFileData = Math.min(TCPdataSize, fileData.length - i);
-                
-                if(remainingFileData==0){
-                    break;
-                }
-                else if(remainingFileData<TCPdataSize){
-                    packetSize = remainingFileData+TCPheaderSize;
-                }
-                else{
-                    packetSize = TCPSegmentSize;
-                }
-                byte[] packetData = new byte[packetSize];
-                byte[] header = createTCPHeader(currentByteSeq,
-                                            0, false, false, false);
-                
-                currentByteSeq += remainingFileData;
-                System.arraycopy(header, 0, packetData, 0, TCPheaderSize);
-                System.arraycopy(fileData, i, packetData, TCPheaderSize, remainingFileData);
-
-                senderWindow.add(packetData);
-            }
-        }catch(Exception e){
-            System.out.println("Error adding packet to window\n"+e);
-        }
-    }
-
-    // Closing the Connection
-    public static void closeConnection() {
-        try {
-            // Step 1: Send FIN
-            byte[] FIN_msgData = createTCPHeader(1, 1, false, false, true); // FIN = 1
-            DatagramPacket FIN_msg = new DatagramPacket(FIN_msgData, FIN_msgData.length, 
-                                                        destinationIP, destinationPortNumber);
-            sendConnectionMngmtPacket(FIN_msg, FIN_msgData, true);
-    
-            // Step 2: Receive ACK
-            byte[] ACK_msgData = new byte[TCPheaderSize];
-            DatagramPacket ACK_msg = new DatagramPacket(ACK_msgData, ACK_msgData.length);;
-            client.receive(ACK_msg);
-            if (!checkChecksum(ACK_msgData)) {
-                throw new Exception("Checksum error in received ACK");
-            }
-            System.out.println("Received ACK for FIN.");
-    
-            // Step 3: Receive FIN from server
-            byte[] FIN_fromServerData = new byte[TCPheaderSize];
-            DatagramPacket FIN_fromServer = new DatagramPacket(FIN_fromServerData, FIN_fromServerData.length);
-            // Here well need to wait for longer incase some packets took time to arrive
-            client.setSoTimeout(100000);
-            client.receive(FIN_fromServer);
-            if (!checkChecksum(FIN_fromServerData)) {
-                throw new Exception("Checksum error in received FIN from server");
-            }
-            System.out.println("Received FIN from server.");
-    
-            // Step 4: Send final ACK
-            byte[] finalACKData = createTCPHeader(2, serverSeqNum + 1, false, true, false); // ACK = 1
-            DatagramPacket finalACK = new DatagramPacket(finalACKData, finalACKData.length, 
-                                                         destinationIP, destinationPortNumber);
-            sendConnectionMngmtPacket(finalACK, finalACKData, false);
+            // We either have a packet with the chosen data size or
+            // a packet with the data that remains int the file
+            // currentSegNum - 1 is because of the byte used in SYN msg
+            int fileDataAvailable = Math.min(TCPdataSize, fileData.length - currentSegNum-1);
             
-            System.out.println("Connection closed successfully.");
-        } catch (Exception e) {
-            System.out.println("Error during connection teardown: " + e.getMessage());
-        } finally {
-            client.close(); // Ensure the socket is closed
+            // The case were these is no more data left in the file
+            if(fileDataAvailable<=0){
+                // send a signal to stop requesting data
+                noMoreData=true;
+                return null;
+            }
+            else if(fileDataAvailable < TCPdataSize){
+                packetSize = fileDataAvailable + TCPheaderSize;
+            }
+            else{
+                packetSize = TCPSegmentSize;
+            }
+            byte[] packetData = new byte[packetSize];
+            byte[] header = createTCPHeader(
+                                        0, false, false, false);
+            
+            System.arraycopy(header, 0, packetData, 0, TCPheaderSize);
+            System.arraycopy(fileData, currentSegNum, packetData, TCPheaderSize, fileDataAvailable);
+            
+            // Calculate and create checksum
+            addChecksum(packetData);
+            seqNumIncrement = fileDataAvailable;
+            return packetData;
+        }catch(Exception e){
+            System.out.println("Error reading and/or processing the data from file\n"+e);
+            return null;
         }
     }
+
     
     // for debugging purposes
-    public static void printAllPacketData(){
+    /*public static void printAllPacketData(){
         for (int i = 0; i < senderWindow.size(); i++) {
             byte[] packet = senderWindow.get(i);
             byte[] data = new byte[packet.length - 20];
             System.arraycopy(packet, 20, data, 0, packet.length - 20);
             System.out.println("Data " + i + ": " + new String(data));
         }
-    }
-
-    // A class representing a worker thread for sending a packet
-    static class PacketSender extends Thread {
-        private final byte[] packetData;
-        private final int packetIndex;
-        private boolean isAcknowledged = false;
-
-        public PacketSender(byte[] packetData, int packetIndex) {
-            this.packetData = packetData;
-            this.packetIndex = packetIndex;
-        }
-
-        @Override
-        public void run() {
-            int retransmissionCount = 0;
-            while (!isAcknowledged && retransmissionCount < maxRetransmissions) {
-                try {
-                    // Send the packet
-                    DatagramPacket packet = new DatagramPacket(packetData, packetData.length, 
-                                                                destinationIP, destinationPortNumber);
-                    client.send(packet);
-                    System.out.println("Sent packet " + packetIndex);
-
-                    // Wait for acknowledgment
-                    byte[] ackData = new byte[TCPheaderSize];
-                    DatagramPacket ackPacket = new DatagramPacket(ackData, ackData.length);
-                    client.setSoTimeout(timeout); // Timer starts
-                    client.receive(ackPacket);
-
-                    // Check for bit errors in the ACK
-                    if (checkChecksum(ackData)) {
-                        // Extract ACK number
-                        int ackNum = (ackData[8] << 24) | (ackData[9] << 16) | (ackData[10] << 8) | (ackData[11]);
-                        if (ackNum == packetIndex + 1) {
-                            isAcknowledged = true;
-                            System.out.println("ACK received for packet " + packetIndex);
-                        } else {
-                            throw new Exception("Incorrect ACK number");
-                        }
-                    } else {
-                        throw new Exception("Checksum error in ACK");
-                    }
-                
-                // Here we can concat both cases BUT, incase we need this difference
-                // for debugging later on
-                } catch (SocketTimeoutException e) {
-                    int seqNum = packetData[4] << 24 | packetData[5] << 16 | packetData[6] << 8 | packetData[7];
-                    System.out.println("[DATA TRANSMISSION]: "+seqNum+" | "+packetData.length);
-                    retransmissionCount++;
-                } catch (Exception e) {
-                    // Getting sequence number from packetBytes
-                    int seqNum = packetData[4] << 24 | packetData[5] << 16 | packetData[6] << 8 | packetData[7];
-                    System.out.println("[DATA TRANSMISSION]: "+seqNum+" | "+packetData.length);
-                    retransmissionCount++;
-                }
-            }
-
-            if (!isAcknowledged) {
-                System.out.println("Max retransmissions reached for packet " + packetIndex);
-            }
-        }
-    }
-
-    public static void manageTransmission() {
-        LinkedList<Thread> threadQueue = new LinkedList<>();
-
-        // Start sending packets in the sender window
-        for (int i = 0; i < senderWindow.size(); i++) {
-            byte[] packet = senderWindow.get(i);
-            PacketSender sender = new PacketSender(packet, i);
-
-            // Add thread to the queue
-            threadQueue.add(sender);
-
-            // Ensure no more than `windowSize` threads are running
-            while (threadQueue.size() >= windowSize) {
-                try {
-                    threadQueue.peek().join(); // Wait for the oldest thread to finish
-                    threadQueue.poll();       // Remove the completed thread
-                } catch (InterruptedException e) {
-                    System.out.println("Error in thread management: " + e.getMessage());
-                }
-            }
-
-            // Start the thread
-            sender.start();
-        }
-
-        // Wait for remaining threads to finish
-        while (!threadQueue.isEmpty()) {
-            try {
-                threadQueue.poll().join();
-            } catch (InterruptedException e) {
-                System.out.println("Error in thread management: " + e.getMessage());
-            }
-        }
-    }
+    }*/
 
     public static void main(String[] args) throws Exception {
         // Retrieving user input and setting up
         storingUserArguments(args);
         try {
             client = new DatagramSocket();
-            client.setSoTimeout(300);
+            client.setSoTimeout(timeout);
         } catch (Exception e) {
-            System.out.println("Error in creating a socket!\n" + e);
+            System.out.println("Socket error encountered!\n" + e);
             System.exit(-1);
         }
 
-        addingPacketsToWindow();  // Populate the sender window
-        establishConnection();    // Establish the connection
-        manageTransmission();     // Start sending data
-        System.out.println("All packets sent successfully.");
-
-        // Close the connection
-        closeConnection(); 
+        
+        try {
+            establishConnection(); // Establish the connection
+    
+            // Send file data while there is more to send
+            while (true) {
+                byte[] packetData = returnNextSegment();
+                if (noMoreData) {
+                    break;
+                }
+                DatagramPacket packet = new DatagramPacket(packetData, packetData.length, destinationIP, destinationPortNumber);
+                sendAndWait(packet, packetData, noMoreData);
+            }
+    
+            System.out.println("[COMPLETE]");
+        } catch (Exception e) {
+            System.out.println("An error occurred during file transfer or connection handling: " + e.getMessage());
+        } finally {
+            closeConnection(); // Ensure connection is closed at the end
+            client.close(); // Release the DatagramSocket resources
+            System.out.println("Connection successfully closed.");
+        }
     }
 
+    public static void closeConnection() {
+        try {
+            // Step 1: Send FIN
+            byte[] FIN_msg_data = createTCPHeader(serverSeqNum+1, false, false, true); // FIN = 1
+            addChecksum(FIN_msg_data);
+            DatagramPacket FIN_msg = new DatagramPacket(FIN_msg_data, FIN_msg_data.length, 
+                                                        destinationIP, destinationPortNumber);
+            
+            // Sending the FIN message and receiving/verifing the FIN-ACK response
+            while(currentRetransmissions <= maxRetransmissions){
+                try{
+                    client.send(FIN_msg);
+                    
+                    printDataTrans(FIN_msg_data);
 
+                    // Wait for FIN ACK response
+                    // Array size mismatch could be an issue here;
+                    // some packets are smaller than segment size.
+                    byte[] dataReceived = new byte[TCPSegmentSize];
+                    DatagramPacket ackPacket = new DatagramPacket(dataReceived, dataReceived.length);
+                    client.receive(ackPacket);
+
+                    byte[] FIN_ACK_msg = ackPacket.getData();  
+
+                    // We will have to retransmit if: 
+                    // 1) the syntax of the SYN_ACK message was incorrect, 
+                    // 2) acknowledgement has a seq num that is before our current seq num or
+                    // 3) we found bit errors in our message 
+                    if((int) FIN_ACK_msg[15] != 5 || negativeAck(FIN_msg_data) 
+                        || !correctChecksum(FIN_msg_data)){
+                        throw new SocketTimeoutException("Last message was not acknowledged");
+                    }
+                    
+                    currentRetransmissions=0;
+                    
+                    // FIN takes `1` byte so, we update our seq
+                    // number accordingly
+                    serverSeqNum++;
+                    break;
+                }
+                // If the timeout expires, we will increment the retransmissions
+                // count and retransmit in the next iteration
+                catch(SocketTimeoutException e){
+                    currentRetransmissions++;
+
+                    if(currentRetransmissions>maxRetransmissions){
+                        System.out.println("Server is not responding :(\n");
+                        System.exit(1);
+                    }
+                }
+                catch(Exception e){
+                    System.out.println("Error occured while sending a packet :/\n"+e);
+                    System.exit(1);
+                }            
+            }
+    
+            // After successfully recieving a FIN ACK message,
+            // we will send the final ACK message
+
+            // Send ACK
+            byte[] ACK_msg_data = createTCPHeader(serverSeqNum+1, false, 
+                                                 true, false);
+            addChecksum(ACK_msg_data);
+            DatagramPacket ACK_msg = new DatagramPacket(ACK_msg_data, ACK_msg_data.length, 
+                                                        destinationIP, destinationPortNumber);
+
+            // Sending the ACK message and checking whether the reciever
+            // retransmited the FIN ACK response (in other words, receivedd this ACKed)
+            while(currentRetransmissions <= maxRetransmissions){
+                try{
+                    client.send(ACK_msg);
+                    
+                    printDataTrans(ACK_msg_data);
+
+                    byte[] dataReceived = new byte[TCPSegmentSize];
+                    DatagramPacket SYN_ACK_Packet = new DatagramPacket(dataReceived, dataReceived.length);
+                    client.receive(SYN_ACK_Packet);  
+                    
+                    // If FIN ACK was retransmitted, we
+                    // will retransmit the ACK message again
+                    currentRetransmissions++;
+
+                    if(currentRetransmissions>maxRetransmissions){
+                        System.out.println("The server wasn't able to successfully close the connection"+
+                                            "Thus, the connection was abrubtly stopped\n");
+                        System.exit(1);
+                    }
+
+                    continue;
+                }
+                // If the timeout expires, that means the server received
+                // the message and did not need to retransmit
+                catch(SocketTimeoutException e){
+                    currentRetransmissions=0;                  
+                }
+                catch(Exception e){
+                    System.out.println("Error occured while sending a packet :/\n"+e);
+                    System.exit(1);
+                }            
+            }
+
+        }catch(Exception e){
+            System.out.println("Error in closing connection!\n" + e);
+            System.exit(-1);
+        }
+        
+        // At this point, we've closed the connection
+        // Bye-Bye
+        return;
+
+    }
+    
+    
 }
