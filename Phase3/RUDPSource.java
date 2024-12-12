@@ -1,5 +1,5 @@
 package Phase3;
-
+import java.nio.charset.StandardCharsets;
 import java.io.FileInputStream;
 import java.net.*;
 
@@ -8,17 +8,41 @@ public class RUDPSource {
     private static InetAddress destinationIP;
     private static int destinationPortNumber;
     private static String filePath;
-    private static int timeout = 1000;
+    private static int timeout = 100000000;
     private static int maxRetransmissions = 5;
     private static int TCPheaderSize = 16; // bytes
     private static int TCPdataSize = 64;   // bytes
     private static int TCPSegmentSize = TCPheaderSize + TCPdataSize; //bytes
-    private static int serverSeqNum = 0;
-    private static int currentSegNum = 0;  // sendbase
+    private static int expectedServerSeqNum; //This is decided by the ISN sent by the server during handshake.
+    private static int mySeqNum = 0;  //Clients ISN
     private static int currentRetransmissions=0;
     private static boolean noMoreData =false;
     private static int seqNumIncrement=0;
 
+
+    public static void printByteArray(byte[] byteArray) {
+        System.out.println("Byte Array Contents:");
+        StringBuilder hexBuilder = new StringBuilder();
+        StringBuilder asciiBuilder = new StringBuilder();
+    
+        // Start from the 17th byte (index 16) and process the rest
+        for (int i = 16; i < byteArray.length; i++) {
+            // Convert byte to hex
+            hexBuilder.append(String.format("%02X ", byteArray[i]));
+    
+            // Convert byte to ASCII if printable
+            char asciiChar = (byteArray[i] >= 32 && byteArray[i] <= 126) ? (char) byteArray[i] : '.';
+            asciiBuilder.append(asciiChar);
+    
+            // Print in chunks of 16 bytes for better readability
+            if ((i - 15) % 16 == 0 || i == byteArray.length - 1) { // Adjusted for skipping 16 bytes
+                System.out.printf("%-48s | %s%n", hexBuilder.toString(), asciiBuilder.toString());
+                hexBuilder.setLength(0);
+                asciiBuilder.setLength(0);
+            }
+        }
+        System.out.println();
+    }
     // Function to store user arguments from command line
     private static void storingUserArguments(String[] args){
         if(args.length<4){
@@ -161,10 +185,10 @@ public class RUDPSource {
         header[3] = (byte) (destinationPortNumber);
 
         // SEQ NUMBER: 32-bits
-        header[4] = (byte) (currentSegNum >> 24);
-        header[5] = (byte) (currentSegNum >> 16);
-        header[6] = (byte) (currentSegNum  >> 8);
-        header[7] = (byte) (currentSegNum );
+        header[4] = (byte) (mySeqNum >> 24);
+        header[5] = (byte) (mySeqNum >> 16);
+        header[6] = (byte) (mySeqNum  >> 8);
+        header[7] = (byte) (mySeqNum );
 
         // ACK NUMBER: 32-bits
         header[8] = (byte) (AckNum >> 24);
@@ -200,11 +224,15 @@ public class RUDPSource {
         return header;
     }
 
+    public static void printDataReception(byte[] packetBytes) {
+        int seqNum =  turnIntoInteger(packetBytes,8,9 ,10 ,11 );
+         System.out.println("[DATA RECEPTION]: " + seqNum + " | " + packetBytes.length);
+     }
+
     public static void printDataTrans(byte[] packetBytes){
         // Getting sequence number from packetBytes by perfoming
         // a bitwise to fit them all on to an int
-        int seqNum = packetBytes[4] << 24 | packetBytes[5] << 16 
-                    | packetBytes[6] << 8 | packetBytes[7];
+        int seqNum = turnIntoInteger(packetBytes,4,5,6,7);
         System.out.println("[DATA TRANSMISSION]: " + seqNum + " | " + packetBytes.length);
     }
 
@@ -213,6 +241,7 @@ public class RUDPSource {
         int currentRetransmissions = 0;
         while(currentRetransmissions < maxRetransmissions){
             try{
+                //printByteArray(packet.getData());
                 client.send(packet);
                 
                 // For debugging
@@ -222,20 +251,21 @@ public class RUDPSource {
                 // There MIGHT be an issue here with size. Some
                 // incoming packets will be less than the segment size.
                 // Couldn't test this.
+                
                 byte[] dataReceived = new byte[TCPSegmentSize];
                 DatagramPacket ackPacket = new DatagramPacket(dataReceived, dataReceived.length);
                 client.receive(ackPacket);
-
                 byte[] ack_packet_data = ackPacket.getData();
 
-                // Check for bit errors or ACKs < Seq num
-                if(!correctChecksum(ack_packet_data) || negativeAck(ack_packet_data)){
+                // Check for bit errors or ACKs < Seq num (removed checksum checking for testing purposes readd.)
+                if(negativeAck(ack_packet_data)){
                     throw new SocketTimeoutException("Packet not received properly");
+                }else{
+                    int packetSeqNumber = turnIntoInteger(ack_packet_data, 4, 5, 6, 7);
+                    expectedServerSeqNum = packetSeqNumber + 1;
+                    mySeqNum = turnIntoInteger(ack_packet_data, 8, 9, 10, 11);
+                    return;
                 }
-                currentRetransmissions=0;
-                    
-                serverSeqNum+=seqNumIncrement;
-                break;
             }
             // If the timeout expires, we will increment the retransmissions
             // count and retransmit in the next iteration
@@ -247,14 +277,20 @@ public class RUDPSource {
                 System.exit(1);
             }            
         }
-        System.out.println("Connection failed to establish\n");     
-        System.exit(1);
     }
-
+    //Rather than do the shifting manually each time have a function do it and just pass the indices for either the seq or the ack number
+    public static int turnIntoInteger(byte[] data,int first,int second,int third, int fourth){
+        int valueInInteger = (data[first] & 0xFF) << 24 | 
+        ((data[second] & 0xFF) << 16) | 
+        ((data[third] & 0xFF) << 8) | 
+        (data[fourth] & 0xFF);
+        return valueInInteger;
+    }
     public static boolean negativeAck(byte[] TCPsegment){
-        int ackNumber = TCPsegment[4] << 24 | TCPsegment[5] << 16 
-                        | TCPsegment[6] << 8 | TCPsegment[7];
-        return ackNumber <= currentSegNum+1;
+        int ackNumber = turnIntoInteger(TCPsegment, 8, 9, 10, 11);
+        //Changed <= to < here
+       printDataReception(TCPsegment);
+        return ackNumber <= mySeqNum+1;
     }
 
     // Function to establish a connection
@@ -263,6 +299,7 @@ public class RUDPSource {
             // Create the SYN message
             // Our ISN will be 0 but we can randomize
             // this in the future
+            //Ack here doesnt matter.
             byte[] SYN_msg_data = createTCPHeader(0, true, false, false);
             addChecksum(SYN_msg_data);
 
@@ -273,36 +310,32 @@ public class RUDPSource {
             while(currentRetransmissions <= maxRetransmissions){
                 try{
                     client.send(SYN_msg);
-                    
                     printDataTrans(SYN_msg_data);
-
                     // Wait for SYN ACK response
                     // Array size mismatch could be an issue here;
                     // some packets are smaller than segment size.
-                    byte[] dataReceived = new byte[TCPSegmentSize];
+                    byte[] dataReceived = new byte[TCPheaderSize];
                     DatagramPacket ackPacket = new DatagramPacket(dataReceived, dataReceived.length);
                     client.receive(ackPacket);
-
-                    byte[] SYN_ACK_msg = ackPacket.getData();  
-
+                    //Cannot reuse old buffer here need to create a new one otherwise in negativeAck we get wrong value of acknumber
+                    //byte[] SYN_ACK_msg = ackPacket.getData(); 
+                     byte[] syn_ack = ackPacket.getData(); 
                     // We will have to retransmit if: 
                     // 1) the syntax of the SYN_ACK message was incorrect, 
                     // 2) acknowledgement has a seq num that is before our current seq num or
                     // 3) we found bit errors in our message 
-                    if((int) SYN_ACK_msg[15] != 6 || negativeAck(SYN_msg_data) 
-                        || !correctChecksum(SYN_msg_data)){
+                    //RENMOVED CHECKSUM CHECKING FOR TESTING !correctChecksum(SYN_msg_data) RE ADD IF WE IMPLEMENT IT
+                    int ackNumber = syn_ack[8] << 24 | syn_ack[9] << 16 
+                        | syn_ack[10] << 8 | syn_ack[11];
+                    if((int)syn_ack[15]!= 6 || ackNumber < mySeqNum + 1){
                         throw new SocketTimeoutException("Last message was not acknowledged");
                     }
-
+                    System.out.println("Recieved SYN-ACK");
                     // Save the server's ISN
-                    serverSeqNum = SYN_ACK_msg[4] << 24 | SYN_ACK_msg[5] << 16 
-                                  | SYN_ACK_msg[6] << 8 | SYN_ACK_msg[7]; 
+                    expectedServerSeqNum = syn_ack[4] << 24 | syn_ack[5] << 16 
+                                  | syn_ack[6] << 8 | syn_ack[7]; 
                     
                     currentRetransmissions=0;
-                    
-                    // SYN takes `1` byte so, we update our seq
-                    // number accordingly
-                    serverSeqNum++;
                     break;
                 }
                 // If the timeout expires, we will increment the retransmissions
@@ -323,20 +356,29 @@ public class RUDPSource {
             // After successfully recieving a SYN ACK message,
             // will will establish a three-way handshake by 
             // sending an ACK.
-
-            // Send ACK (sequence number doesnt matter)
-            byte[] ACK_msg_data = createTCPHeader(serverSeqNum+1, false, 
+            // Send ACK (sequence number doesnt matter because server doesnt send an ack on for our ack but rather the first segment we send.
+            //Here we send ACK for the servers ISN + 1.
+            //So servers next packet will be our ack + 1.
+            byte[] ACK_msg_data = createTCPHeader(expectedServerSeqNum+1, false, 
                                                  true, false);
-            addChecksum(ACK_msg_data);
+           //addChecksum(ACK_msg_data);
             DatagramPacket ACK_msg = new DatagramPacket(ACK_msg_data, ACK_msg_data.length, 
                                                         destinationIP, destinationPortNumber);
 
             // Sending the ACK message and checking whether the reciever
             // retransmited the SYN ACK response (in other words, receivedd this ACKed)
+            //I commented out this part and it should be deleted after the ack server doesnt respond we wait for the first ack on our data 
+            
+            try {
+                client.send(ACK_msg);
+            } catch (Exception e) {
+                System.out.println("Failed to send Ack message");
+            }
+    /* 
             while(currentRetransmissions <= maxRetransmissions){
                 try{
                     client.send(ACK_msg);
-                    
+                    System.out.println("IM IN HERE!");
                     printDataTrans(ACK_msg_data);
 
                     // Wait for SYN ACK response
@@ -368,7 +410,7 @@ public class RUDPSource {
                     System.exit(1);
                 }            
             }
-
+            */
         }catch(Exception e){
             System.out.println("Error in establishing connection!\n" + e);
             System.exit(-1);
@@ -397,9 +439,8 @@ public class RUDPSource {
 
             // We either have a packet with the chosen data size or
             // a packet with the data that remains int the file
-            // currentSegNum - 1 is because of the byte used in SYN msg
-            int fileDataAvailable = Math.min(TCPdataSize, fileData.length - currentSegNum-1);
-            
+            // mySeqNum - 1 is because of the byte used in SYN msg
+            int fileDataAvailable = Math.min(TCPdataSize, fileData.length - mySeqNum);
             // The case were these is no more data left in the file
             if(fileDataAvailable<=0){
                 // send a signal to stop requesting data
@@ -417,7 +458,7 @@ public class RUDPSource {
                                         0, false, false, false);
             
             System.arraycopy(header, 0, packetData, 0, TCPheaderSize);
-            System.arraycopy(fileData, currentSegNum, packetData, TCPheaderSize, fileDataAvailable);
+            System.arraycopy(fileData, mySeqNum, packetData, TCPheaderSize, fileDataAvailable);
             
             // Calculate and create checksum
             addChecksum(packetData);
@@ -458,6 +499,7 @@ public class RUDPSource {
             // Send file data while there is more to send
             while (true) {
                 byte[] packetData = returnNextSegment();
+                System.out.println();
                 if (noMoreData) {
                     break;
                 }
@@ -478,7 +520,7 @@ public class RUDPSource {
     public static void closeConnection() {
         try {
             // Step 1: Send FIN
-            byte[] FIN_msg_data = createTCPHeader(serverSeqNum+1, false, false, true); // FIN = 1
+            byte[] FIN_msg_data = createTCPHeader(expectedServerSeqNum+1, false, false, true); // FIN = 1
             addChecksum(FIN_msg_data);
             DatagramPacket FIN_msg = new DatagramPacket(FIN_msg_data, FIN_msg_data.length, 
                                                         destinationIP, destinationPortNumber);
@@ -498,21 +540,23 @@ public class RUDPSource {
                     client.receive(ackPacket);
 
                     byte[] FIN_ACK_msg = ackPacket.getData();  
-
+                    int ackNumber = turnIntoInteger(FIN_ACK_msg,8,9,10,11);
                     // We will have to retransmit if: 
                     // 1) the syntax of the SYN_ACK message was incorrect, 
                     // 2) acknowledgement has a seq num that is before our current seq num or
                     // 3) we found bit errors in our message 
-                    if((int) FIN_ACK_msg[15] != 5 || negativeAck(FIN_msg_data) 
-                        || !correctChecksum(FIN_msg_data)){
+                    //I Removed the checksum check here for testing 
+                    if((int) FIN_ACK_msg[15] != 5 || ackNumber < mySeqNum + 1 ){
                         throw new SocketTimeoutException("Last message was not acknowledged");
                     }
-                    
+                    expectedServerSeqNum = turnIntoInteger(FIN_ACK_msg,4,5,6,7);
+                    expectedServerSeqNum++;
+                    mySeqNum = turnIntoInteger(FIN_ACK_msg, 8, 9, 10, 11);
                     currentRetransmissions=0;
                     
                     // FIN takes `1` byte so, we update our seq
                     // number accordingly
-                    serverSeqNum++;
+                    expectedServerSeqNum++;
                     break;
                 }
                 // If the timeout expires, we will increment the retransmissions
@@ -535,14 +579,16 @@ public class RUDPSource {
             // we will send the final ACK message
 
             // Send ACK
-            byte[] ACK_msg_data = createTCPHeader(serverSeqNum+1, false, 
+            byte[] ACK_msg_data = createTCPHeader(expectedServerSeqNum, false, 
                                                  true, false);
-            addChecksum(ACK_msg_data);
+            //addChecksum(ACK_msg_data);
             DatagramPacket ACK_msg = new DatagramPacket(ACK_msg_data, ACK_msg_data.length, 
                                                         destinationIP, destinationPortNumber);
-
+            client.send(ACK_msg);
+            /*
             // Sending the ACK message and checking whether the reciever
             // retransmited the FIN ACK response (in other words, receivedd this ACKed)
+            This is also not needed we close after sending our ack instantly
             while(currentRetransmissions <= maxRetransmissions){
                 try{
                     client.send(ACK_msg);
@@ -575,12 +621,11 @@ public class RUDPSource {
                     System.exit(1);
                 }            
             }
-
+  */
         }catch(Exception e){
             System.out.println("Error in closing connection!\n" + e);
             System.exit(-1);
         }
-        
         // At this point, we've closed the connection
         // Bye-Bye
         return;
