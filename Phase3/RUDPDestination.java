@@ -5,11 +5,9 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Random;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 public class RUDPDestination {
     private static DatagramSocket server;
     private static ArrayList<byte[]> fragmentStorage; // This arraylist will hold all the fragments until after the
@@ -153,69 +151,6 @@ public class RUDPDestination {
         header[15] = (byte) sumOfFlags;
         return header;
     }
-
-    /*
-     * // Function that computes the checksum of the header and data of the packet
-     * public static int computeChecksum(byte[] packet) {
-     * int sum = 0, firstByte, secondByte;
-     * 
-     * // To calculate the checksum, we need to add the
-     * // TCP pseudo-header, TCP header, and TCP data
-     * // Source IP (4 bytes)
-     * // Source IP (convert to bytes)
-     * byte[] srcIPBytes = client.getLocalAddress().getAddress();
-     * for (int i = 0; i < 4; i += 2) {
-     * int word = ((srcIPBytes[i] & 0xFF) << 8) | (srcIPBytes[i + 1] & 0xFF);
-     * sum += word;
-     * }
-     * 
-     * // Destination IP (convert to bytes)
-     * byte[] destIPBytes = destinationIP.getAddress();
-     * for (int i = 0; i < 4; i += 2) {
-     * int word = ((destIPBytes[i] & 0xFF) << 8) | (destIPBytes[i + 1] & 0xFF);
-     * sum += word;
-     * }
-     * 
-     * // Protocol (equal to six for TCP) (1 byte)
-     * sum += (byte) 6 & 0xFF;
-     * 
-     * // Length (2 bytes)
-     * sum += (byte) packet.length & 0xFFFF;
-     * for (int i = 0; i < packet.length; i += 2) {
-     * firstByte = packet[i] & 0xFF;
-     * 
-     * // If the packet has an odd number of bytes, pad with 0 for the last byte
-     * if (i == packet.length - 1) {
-     * secondByte = 0;
-     * } else {
-     * secondByte = packet[i + 1] & 0xFF;
-     * }
-     * 
-     * // Combine the two bytes into a 16-bit word
-     * int word = (firstByte << 8) | secondByte;
-     * 
-     * // Add the 16-bit word to the sum
-     * sum += word;
-     * 
-     * // Handle wraparound (if the sum exceeds 16 bits)
-     * if ((sum & 0xFFFF0000) != 0) {
-     * // Carry occurred, so wrap around by adding the carry
-     * sum = (sum & 0xFFFF) + (sum >> 16);
-     * }
-     * }
-     * 
-     * // One's complement of the sum
-     * return ~sum & 0xFFFF;
-     * }
-     * 
-     * // Function that inserts the correct checksum into the header
-     * public static void addChecksum(byte[] packet) {
-     * int checksum = computeChecksum(packet);
-     * packet[12] = (byte) (checksum >> 8);
-     * packet[13] = (byte) (checksum);
-     * return;
-     * }
-     */
     public static void printDataTrans(byte[] packetBytes) {
         int seqNum = turnIntoInteger(packetBytes,8,9 ,10 ,11 );
         System.out.println("[DATA TRANSMISSION]: " + seqNum + " | " + packetBytes.length);
