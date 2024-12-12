@@ -9,7 +9,7 @@ public class RUDPSource {
     private static int destinationPortNumber;
     private static String filePath;
     private static int timeout = 100000000;
-    private static int maxRetransmissions = 5;
+    private static int maxRetransmissions = 3;
     private static int TCPheaderSize = 16; // bytes
     private static int TCPdataSize = 64;   // bytes
     private static int TCPSegmentSize = TCPheaderSize + TCPdataSize; //bytes

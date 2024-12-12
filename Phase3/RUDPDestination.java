@@ -15,7 +15,7 @@ public class RUDPDestination {
     private static ArrayList<byte[]> fragmentStorage; // This arraylist will hold all the fragments until after the
                                                          // whole interaction is done they are written into the
                                                            // file.
-    private static double packetLossChance = 100;//Defined by whoever is running the code to control loss , and delay parameters
+    private static double packetLossChance = 0.5;//Defined by whoever is running the code to control loss , and delay parameters
     private static int minDelay = 0;           
     private static int maxDelay = 100;         
     private static int TCPheaderSize = 16;// Sizes in Bytes as defined by protocols.
